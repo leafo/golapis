@@ -54,10 +54,19 @@ static void pop_stack(lua_State *L, int n) {
     lua_pop(L, n);
 }
 
+// Forward declaration for Go function
+extern int go_sleep(lua_State *L);
+
+static int c_sleep_wrapper(lua_State *L) {
+    return go_sleep(L);
+}
+
 static void setup_golapis_global(lua_State *L) {
     lua_newtable(L);                    // Create new table
     lua_pushstring(L, "1.0.0");        // Push version string
     lua_setfield(L, -2, "version");    // Set table.version = "1.0.0"
+    lua_pushcfunction(L, c_sleep_wrapper); // Push sleep function
+    lua_setfield(L, -2, "sleep");      // Set table.sleep = function
     lua_setglobal(L, "golapis");       // Set global golapis = table
 }
 */
@@ -65,11 +74,31 @@ import "C"
 import (
 	"fmt"
 	"os"
+	"time"
 	"unsafe"
 )
 
 type LuaState struct {
 	state *C.lua_State
+}
+
+//export go_sleep
+func go_sleep(L *C.lua_State) C.int {
+	if C.lua_gettop(L) != 1 {
+		C.lua_pushstring(L, C.CString("sleep expects exactly one argument (seconds)"))
+		return 1
+	}
+
+	if C.lua_isnumber(L, 1) == 0 {
+		C.lua_pushstring(L, C.CString("sleep argument must be a number"))
+		return 1
+	}
+
+	seconds := C.lua_tonumber(L, 1)
+	duration := time.Duration(float64(seconds) * float64(time.Second))
+	time.Sleep(duration)
+
+	return 0
 }
 
 func NewLuaState() *LuaState {
@@ -96,7 +125,7 @@ func (ls *LuaState) SetupGolapis() {
 func (ls *LuaState) RunString(code string) error {
 	ccode := C.CString(code)
 	defer C.free(unsafe.Pointer(ccode))
-	
+
 	result := C.run_lua_string(ls.state, ccode)
 	if result != 0 {
 		errMsg := C.GoString(C.get_error_string(ls.state))
@@ -109,7 +138,7 @@ func (ls *LuaState) RunString(code string) error {
 func (ls *LuaState) RunFile(filename string) error {
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))
-	
+
 	result := C.run_lua_file(ls.state, cfilename)
 	if result != 0 {
 		errMsg := C.GoString(C.get_error_string(ls.state))
