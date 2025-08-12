@@ -53,6 +53,13 @@ static const char* get_error_string(lua_State *L) {
 static void pop_stack(lua_State *L, int n) {
     lua_pop(L, n);
 }
+
+static void setup_golapis_global(lua_State *L) {
+    lua_newtable(L);                    // Create new table
+    lua_pushstring(L, "1.0.0");        // Push version string
+    lua_setfield(L, -2, "version");    // Set table.version = "1.0.0"
+    lua_setglobal(L, "golapis");       // Set global golapis = table
+}
 */
 import "C"
 import (
@@ -70,7 +77,9 @@ func NewLuaState() *LuaState {
 	if L == nil {
 		return nil
 	}
-	return &LuaState{state: L}
+	ls := &LuaState{state: L}
+	ls.SetupGolapis()
+	return ls
 }
 
 func (ls *LuaState) Close() {
@@ -78,6 +87,10 @@ func (ls *LuaState) Close() {
 		C.lua_close(ls.state)
 		ls.state = nil
 	}
+}
+
+func (ls *LuaState) SetupGolapis() {
+	C.setup_golapis_global(ls.state)
 }
 
 func (ls *LuaState) RunString(code string) error {
