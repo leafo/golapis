@@ -10,15 +10,16 @@ luajit:
 
 build: luajit
 	@echo "Building golapis..."
-	CGO_ENABLED=1 go build -o $(BINARY_NAME) -ldflags="-s -w" .
+	@mkdir -p bin
+	CGO_ENABLED=1 go build -o bin/$(BINARY_NAME) -ldflags="-s -w" .
 
 clean:
 	@echo "Cleaning..."
-	rm -f $(BINARY_NAME)
+	rm -f bin/$(BINARY_NAME)
 	$(MAKE) -C luajit clean
 
 test: build
 	@echo "Testing with simple Lua script..."
 	@echo 'print("Hello from Lua!")' > test.lua
-	@./$(BINARY_NAME) test.lua
+	@./bin/$(BINARY_NAME) test.lua
 	@rm -f test.lua
