@@ -123,21 +123,12 @@ static void lua_getglobal_wrapper(lua_State *L, const char *name) {
     lua_getglobal(L, name);
 }
 
-static void lua_pushvalue_wrapper(lua_State *L, int idx) {
-    lua_pushvalue(L, idx);
-}
 
 static void lua_pop_wrapper(lua_State *L, int n) {
     lua_pop(L, n);
 }
 
-static void lua_xmove_wrapper(lua_State *from, lua_State *to, int n) {
-    lua_xmove(from, to, n);
-}
 
-static int lua_resume_wrapper(lua_State *L, int narg) {
-    return lua_resume(L, narg);
-}
 */
 import "C"
 import (
@@ -246,14 +237,14 @@ func (gls *GolapisLuaState) CallLoadedAsCoroutine() error {
 	// The loaded function should be at top of stack (-1)
 	// After lua_newthread, stack is: [function, thread]
 	// So function is now at -2, thread at -1
-	C.lua_pushvalue_wrapper(gls.luaState, -2) // Copy the function
-	C.lua_xmove_wrapper(gls.luaState, co, 1)  // Move copy to coroutine
+	C.lua_pushvalue(gls.luaState, -2) // Copy the function
+	C.lua_xmove(gls.luaState, co, 1)  // Move copy to coroutine
 
 	// Remove the thread object from main stack
 	C.lua_pop_wrapper(gls.luaState, 1)
 
 	// Resume the coroutine
-	result := C.lua_resume_wrapper(co, 0)
+	result := C.lua_resume(co, 0)
 
 	if result != 0 && result != 1 { // LUA_YIELD = 1, which is OK for coroutines
 		errMsg := C.GoString(C.get_error_string(co))
@@ -349,7 +340,7 @@ func golapis_print(L *C.lua_State) C.int {
 		} else {
 			// For non-strings, convert to string using Lua's tostring
 			C.lua_getglobal_wrapper(L, C.CString("tostring"))
-			C.lua_pushvalue_wrapper(L, i)
+			C.lua_pushvalue(L, i)
 			if C.lua_pcall(L, 1, 1, 0) == 0 {
 				str := C.GoString(C.lua_tostring_wrapper(L, -1))
 				gls.writeOutput(str)
