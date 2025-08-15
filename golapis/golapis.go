@@ -174,8 +174,8 @@ type GolapisLuaState struct {
 	outputWriter io.Writer
 }
 
-// NewLuaState creates a new Lua state and initializes it with golapis functions
-func NewLuaState() *GolapisLuaState {
+// NewGolapisLuaState creates a new Lua state and initializes it with golapis functions
+func NewGolapisLuaState() *GolapisLuaState {
 	L := C.new_lua_state()
 	if L == nil {
 		return nil
@@ -247,7 +247,7 @@ func (gls *GolapisLuaState) RunFile(filename string) error {
 	return nil
 }
 
-// LoadFile loads a Lua file but doesn't execute it
+// LoadFile loads a Lua file onto the stack, but doesn't execute it
 func (gls *GolapisLuaState) LoadFile(filename string) error {
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))

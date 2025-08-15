@@ -14,7 +14,7 @@ func StartHTTPServer(filename, port string) {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		lua := NewLuaState()
+		lua := NewGolapisLuaState()
 		if lua == nil {
 			http.Error(w, "Failed to create Lua state", http.StatusInternalServerError)
 			logHTTPRequest(r, http.StatusInternalServerError, 0, time.Since(start))

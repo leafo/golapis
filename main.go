@@ -29,7 +29,7 @@ func main() {
 }
 
 func runSingleExecution(filename string) {
-	lua := golapis.NewLuaState()
+	lua := golapis.NewGolapisLuaState()
 	if lua == nil {
 		fmt.Println("Failed to create Lua state")
 		os.Exit(1)
