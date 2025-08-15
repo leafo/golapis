@@ -167,131 +167,131 @@ import (
 	"unsafe"
 )
 
-// LuaState represents a Lua state with golapis functions initialized
-type LuaState struct {
-	state        *C.lua_State
+// GolapisLuaState represents a Lua state with golapis functions initialized
+type GolapisLuaState struct {
+	luaState     *C.lua_State
 	outputBuffer *bytes.Buffer
 	outputWriter io.Writer
 }
 
 // NewLuaState creates a new Lua state and initializes it with golapis functions
-func NewLuaState() *LuaState {
+func NewLuaState() *GolapisLuaState {
 	L := C.new_lua_state()
 	if L == nil {
 		return nil
 	}
-	ls := &LuaState{
-		state:        L,
+	gls := &GolapisLuaState{
+		luaState:     L,
 		outputBuffer: &bytes.Buffer{},
 		outputWriter: os.Stdout,
 	}
-	ls.registerState()
-	ls.SetupGolapis()
-	return ls
+	gls.registerState()
+	gls.SetupGolapis()
+	return gls
 }
 
 // Close closes the Lua state and frees its resources
-func (ls *LuaState) Close() {
-	if ls.state != nil {
-		ls.unregisterState()
-		C.lua_close(ls.state)
-		ls.state = nil
+func (gls *GolapisLuaState) Close() {
+	if gls.luaState != nil {
+		gls.unregisterState()
+		C.lua_close(gls.luaState)
+		gls.luaState = nil
 	}
 }
 
 // SetupGolapis initializes the golapis global table with exported functions
-func (ls *LuaState) SetupGolapis() {
-	C.setup_golapis_global(ls.state)
+func (gls *GolapisLuaState) SetupGolapis() {
+	C.setup_golapis_global(gls.luaState)
 }
 
 // SetOutputWriter sets the output writer for golapis.print function
-func (ls *LuaState) SetOutputWriter(w io.Writer) {
-	ls.outputWriter = w
+func (gls *GolapisLuaState) SetOutputWriter(w io.Writer) {
+	gls.outputWriter = w
 }
 
 // GetOutput returns the current contents of the output buffer
-func (ls *LuaState) GetOutput() string {
-	return ls.outputBuffer.String()
+func (gls *GolapisLuaState) GetOutput() string {
+	return gls.outputBuffer.String()
 }
 
 // ClearOutput clears the output buffer
-func (ls *LuaState) ClearOutput() {
-	ls.outputBuffer.Reset()
+func (gls *GolapisLuaState) ClearOutput() {
+	gls.outputBuffer.Reset()
 }
 
 // RunString executes a Lua code string
-func (ls *LuaState) RunString(code string) error {
+func (gls *GolapisLuaState) RunString(code string) error {
 	ccode := C.CString(code)
 	defer C.free(unsafe.Pointer(ccode))
 
-	result := C.run_lua_string(ls.state, ccode)
+	result := C.run_lua_string(gls.luaState, ccode)
 	if result != 0 {
-		errMsg := C.GoString(C.get_error_string(ls.state))
-		C.pop_stack(ls.state, 1)
+		errMsg := C.GoString(C.get_error_string(gls.luaState))
+		C.pop_stack(gls.luaState, 1)
 		return fmt.Errorf("lua error: %s", errMsg)
 	}
 	return nil
 }
 
 // RunFile executes a Lua file
-func (ls *LuaState) RunFile(filename string) error {
+func (gls *GolapisLuaState) RunFile(filename string) error {
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))
 
-	result := C.run_lua_file(ls.state, cfilename)
+	result := C.run_lua_file(gls.luaState, cfilename)
 	if result != 0 {
-		errMsg := C.GoString(C.get_error_string(ls.state))
-		C.pop_stack(ls.state, 1)
+		errMsg := C.GoString(C.get_error_string(gls.luaState))
+		C.pop_stack(gls.luaState, 1)
 		return fmt.Errorf("lua error: %s", errMsg)
 	}
 	return nil
 }
 
 // LoadFile loads a Lua file but doesn't execute it
-func (ls *LuaState) LoadFile(filename string) error {
+func (gls *GolapisLuaState) LoadFile(filename string) error {
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))
 
-	result := C.load_lua_file(ls.state, cfilename)
+	result := C.load_lua_file(gls.luaState, cfilename)
 	if result != 0 {
-		errMsg := C.GoString(C.get_error_string(ls.state))
-		C.pop_stack(ls.state, 1)
+		errMsg := C.GoString(C.get_error_string(gls.luaState))
+		C.pop_stack(gls.luaState, 1)
 		return fmt.Errorf("lua error: %s", errMsg)
 	}
 	return nil
 }
 
 // CallLoaded executes the previously loaded Lua code
-func (ls *LuaState) CallLoaded() error {
-	result := C.call_loaded_lua(ls.state)
+func (gls *GolapisLuaState) CallLoaded() error {
+	result := C.call_loaded_lua(gls.luaState)
 	if result != 0 {
-		errMsg := C.GoString(C.get_error_string(ls.state))
-		C.pop_stack(ls.state, 1)
+		errMsg := C.GoString(C.get_error_string(gls.luaState))
+		C.pop_stack(gls.luaState, 1)
 		return fmt.Errorf("lua error: %s", errMsg)
 	}
 	return nil
 }
 
 // CallLoadedAsCoroutine executes the previously loaded Lua code as a coroutine
-func (ls *LuaState) CallLoadedAsCoroutine() error {
-	// Create coroutine and register it to use the same LuaState for golapis functions
-	co := C.create_coroutine(ls.state)
+func (gls *GolapisLuaState) CallLoadedAsCoroutine() error {
+	// Create coroutine and register it to use the same GolapisLuaState for golapis functions
+	co := C.create_coroutine(gls.luaState)
 	if co == nil {
 		return fmt.Errorf("failed to create coroutine")
 	}
 
-	// Register the coroutine to use the same LuaState for golapis functions
-	luaStateMap[co] = ls
+	// Register the coroutine to use the same GolapisLuaState for golapis functions
+	luaStateMap[co] = gls
 	defer delete(luaStateMap, co)
 
 	// The loaded function should be at top of stack (-1)
 	// After lua_newthread, stack is: [function, thread]
 	// So function is now at -2, thread at -1
-	C.lua_pushvalue_wrapper(ls.state, -2) // Copy the function
-	C.lua_xmove_wrapper(ls.state, co, 1)  // Move copy to coroutine
+	C.lua_pushvalue_wrapper(gls.luaState, -2) // Copy the function
+	C.lua_xmove_wrapper(gls.luaState, co, 1)  // Move copy to coroutine
 
 	// Remove the thread object from main stack
-	C.lua_pop_wrapper(ls.state, 1)
+	C.lua_pop_wrapper(gls.luaState, 1)
 
 	// Resume the coroutine
 	result := C.lua_resume_wrapper(co, 0)
@@ -373,59 +373,59 @@ func golapis_sleep(L *C.lua_State) C.int {
 
 //export golapis_print
 func golapis_print(L *C.lua_State) C.int {
-	// Get the LuaState instance from the registry
-	ls := getLuaStateFromRegistry(L)
-	if ls == nil {
+	// Get the GolapisLuaState instance from the registry
+	gls := getLuaStateFromRegistry(L)
+	if gls == nil {
 		return 0
 	}
 
 	nargs := C.lua_gettop(L)
 	for i := C.int(1); i <= nargs; i++ {
 		if i > 1 {
-			ls.writeOutput("\t")
+			gls.writeOutput("\t")
 		}
 		if C.lua_isstring(L, i) != 0 {
 			str := C.GoString(C.lua_tostring_wrapper(L, i))
-			ls.writeOutput(str)
+			gls.writeOutput(str)
 		} else {
 			// For non-strings, convert to string using Lua's tostring
 			C.lua_getglobal_wrapper(L, C.CString("tostring"))
 			C.lua_pushvalue_wrapper(L, i)
 			if C.lua_pcall(L, 1, 1, 0) == 0 {
 				str := C.GoString(C.lua_tostring_wrapper(L, -1))
-				ls.writeOutput(str)
+				gls.writeOutput(str)
 				C.lua_pop_wrapper(L, 1)
 			} else {
-				ls.writeOutput("<error converting to string>")
+				gls.writeOutput("<error converting to string>")
 				C.lua_pop_wrapper(L, 1)
 			}
 		}
 	}
-	ls.writeOutput("\n")
+	gls.writeOutput("\n")
 	return 0
 }
 
 // Helper function to write output to buffer or writer
-func (ls *LuaState) writeOutput(text string) {
-	if ls.outputWriter != nil {
-		ls.outputWriter.Write([]byte(text))
+func (gls *GolapisLuaState) writeOutput(text string) {
+	if gls.outputWriter != nil {
+		gls.outputWriter.Write([]byte(text))
 	} else {
-		ls.outputBuffer.WriteString(text)
+		gls.outputBuffer.WriteString(text)
 	}
 }
 
-// We need a way to associate the LuaState with the C lua_State
+// We need a way to associate the GolapisLuaState with the C lua_State
 // This is a simplified approach using a global map
-var luaStateMap = make(map[*C.lua_State]*LuaState)
+var luaStateMap = make(map[*C.lua_State]*GolapisLuaState)
 
-func (ls *LuaState) registerState() {
-	luaStateMap[ls.state] = ls
+func (gls *GolapisLuaState) registerState() {
+	luaStateMap[gls.luaState] = gls
 }
 
-func (ls *LuaState) unregisterState() {
-	delete(luaStateMap, ls.state)
+func (gls *GolapisLuaState) unregisterState() {
+	delete(luaStateMap, gls.luaState)
 }
 
-func getLuaStateFromRegistry(L *C.lua_State) *LuaState {
+func getLuaStateFromRegistry(L *C.lua_State) *GolapisLuaState {
 	return luaStateMap[L]
 }
