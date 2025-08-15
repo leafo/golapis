@@ -46,6 +46,40 @@ static int run_lua_file(lua_State *L, const char *filename) {
     return result;
 }
 
+static int load_lua_file(lua_State *L, const char *filename) {
+    int result = luaL_loadfile(L, filename);
+    fflush(stdout);
+    return result;
+}
+
+static int call_loaded_lua(lua_State *L) {
+    int result = lua_pcall(L, 0, LUA_MULTRET, 0);
+    fflush(stdout);
+    return result;
+}
+
+static lua_State* create_coroutine(lua_State *L) {
+    lua_State *co = lua_newthread(L);
+    return co;
+}
+
+static int call_coroutine_with_function(lua_State *L) {
+    // Create a new coroutine
+    lua_State *co = lua_newthread(L);
+
+    // Push a copy of the function to the coroutine
+    lua_pushvalue(L, -2);  // Copy the function (which should be at -2 now due to thread at -1)
+    lua_xmove(L, co, 1);   // Move copy to coroutine
+
+    int result = lua_resume(co, 0);
+
+    // Clean up: remove the thread from main stack
+    lua_pop(L, 1);
+
+    fflush(stdout);
+    return result;
+}
+
 static const char* get_error_string(lua_State *L) {
     return lua_tostring(L, -1);
 }
@@ -111,6 +145,14 @@ static void lua_pushvalue_wrapper(lua_State *L, int idx) {
 
 static void lua_pop_wrapper(lua_State *L, int n) {
     lua_pop(L, n);
+}
+
+static void lua_xmove_wrapper(lua_State *from, lua_State *to, int n) {
+    lua_xmove(from, to, n);
+}
+
+static int lua_resume_wrapper(lua_State *L, int narg) {
+    return lua_resume(L, narg);
 }
 */
 import "C"
@@ -201,6 +243,62 @@ func (ls *LuaState) RunFile(filename string) error {
 		errMsg := C.GoString(C.get_error_string(ls.state))
 		C.pop_stack(ls.state, 1)
 		return fmt.Errorf("lua error: %s", errMsg)
+	}
+	return nil
+}
+
+// LoadFile loads a Lua file but doesn't execute it
+func (ls *LuaState) LoadFile(filename string) error {
+	cfilename := C.CString(filename)
+	defer C.free(unsafe.Pointer(cfilename))
+
+	result := C.load_lua_file(ls.state, cfilename)
+	if result != 0 {
+		errMsg := C.GoString(C.get_error_string(ls.state))
+		C.pop_stack(ls.state, 1)
+		return fmt.Errorf("lua error: %s", errMsg)
+	}
+	return nil
+}
+
+// CallLoaded executes the previously loaded Lua code
+func (ls *LuaState) CallLoaded() error {
+	result := C.call_loaded_lua(ls.state)
+	if result != 0 {
+		errMsg := C.GoString(C.get_error_string(ls.state))
+		C.pop_stack(ls.state, 1)
+		return fmt.Errorf("lua error: %s", errMsg)
+	}
+	return nil
+}
+
+// CallLoadedAsCoroutine executes the previously loaded Lua code as a coroutine
+func (ls *LuaState) CallLoadedAsCoroutine() error {
+	// Create coroutine and register it to use the same LuaState for golapis functions
+	co := C.create_coroutine(ls.state)
+	if co == nil {
+		return fmt.Errorf("failed to create coroutine")
+	}
+
+	// Register the coroutine to use the same LuaState for golapis functions
+	luaStateMap[co] = ls
+	defer delete(luaStateMap, co)
+
+	// The loaded function should be at top of stack (-1)
+	// After lua_newthread, stack is: [function, thread]
+	// So function is now at -2, thread at -1
+	C.lua_pushvalue_wrapper(ls.state, -2) // Copy the function
+	C.lua_xmove_wrapper(ls.state, co, 1)  // Move copy to coroutine
+
+	// Remove the thread object from main stack
+	C.lua_pop_wrapper(ls.state, 1)
+
+	// Resume the coroutine
+	result := C.lua_resume_wrapper(co, 0)
+
+	if result != 0 && result != 1 { // LUA_YIELD = 1, which is OK for coroutines
+		errMsg := C.GoString(C.get_error_string(co))
+		return fmt.Errorf("lua coroutine error: %s", errMsg)
 	}
 	return nil
 }
