@@ -11,17 +11,6 @@ import (
 func StartHTTPServer(filename, port string) {
 	fmt.Printf("Starting HTTP server on port %s with script: %s\n", port, filename)
 
-	// Load the Lua file once at startup to validate it
-	templateLua := NewLuaState()
-	if templateLua == nil {
-		log.Fatal("Failed to create template Lua state")
-	}
-	defer templateLua.Close()
-
-	if err := templateLua.LoadFile(filename); err != nil {
-		log.Fatal(fmt.Sprintf("Error loading Lua file: %v", err))
-	}
-
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
