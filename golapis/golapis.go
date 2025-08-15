@@ -55,15 +55,20 @@ static void pop_stack(lua_State *L, int n) {
 }
 
 // Forward declaration for Go function
-extern int go_sleep(lua_State *L);
-extern int go_http_request(lua_State *L);
+extern int golapis_sleep(lua_State *L);
+extern int golapis_http_request(lua_State *L);
+extern int golapis_print(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
-    return go_sleep(L);
+    return golapis_sleep(L);
 }
 
 static int c_http_request_wrapper(lua_State *L) {
-    return go_http_request(L);
+    return golapis_http_request(L);
+}
+
+static int c_print_wrapper(lua_State *L) {
+    return golapis_print(L);
 }
 
 static void setup_golapis_global(lua_State *L) {
@@ -74,6 +79,9 @@ static void setup_golapis_global(lua_State *L) {
 
     lua_pushcfunction(L, c_sleep_wrapper);
     lua_setfield(L, -2, "sleep");
+
+    lua_pushcfunction(L, c_print_wrapper);
+    lua_setfield(L, -2, "print");
 
     // Create http table
     lua_newtable(L);
@@ -92,10 +100,24 @@ static void lua_newtable_wrapper(lua_State *L) {
 static const char* lua_tostring_wrapper(lua_State *L, int idx) {
     return lua_tostring(L, idx);
 }
+
+static void lua_getglobal_wrapper(lua_State *L, const char *name) {
+    lua_getglobal(L, name);
+}
+
+static void lua_pushvalue_wrapper(lua_State *L, int idx) {
+    lua_pushvalue(L, idx);
+}
+
+static void lua_pop_wrapper(lua_State *L, int n) {
+    lua_pop(L, n);
+}
 */
 import "C"
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"time"
@@ -104,7 +126,9 @@ import (
 
 // LuaState represents a Lua state with golapis functions initialized
 type LuaState struct {
-	state *C.lua_State
+	state        *C.lua_State
+	outputBuffer *bytes.Buffer
+	outputWriter io.Writer
 }
 
 // NewLuaState creates a new Lua state and initializes it with golapis functions
@@ -113,7 +137,11 @@ func NewLuaState() *LuaState {
 	if L == nil {
 		return nil
 	}
-	ls := &LuaState{state: L}
+	ls := &LuaState{
+		state:        L,
+		outputBuffer: &bytes.Buffer{},
+	}
+	ls.registerState()
 	ls.SetupGolapis()
 	return ls
 }
@@ -121,6 +149,7 @@ func NewLuaState() *LuaState {
 // Close closes the Lua state and frees its resources
 func (ls *LuaState) Close() {
 	if ls.state != nil {
+		ls.unregisterState()
 		C.lua_close(ls.state)
 		ls.state = nil
 	}
@@ -129,6 +158,21 @@ func (ls *LuaState) Close() {
 // SetupGolapis initializes the golapis global table with exported functions
 func (ls *LuaState) SetupGolapis() {
 	C.setup_golapis_global(ls.state)
+}
+
+// SetOutputWriter sets the output writer for golapis.print function
+func (ls *LuaState) SetOutputWriter(w io.Writer) {
+	ls.outputWriter = w
+}
+
+// GetOutput returns the current contents of the output buffer
+func (ls *LuaState) GetOutput() string {
+	return ls.outputBuffer.String()
+}
+
+// ClearOutput clears the output buffer
+func (ls *LuaState) ClearOutput() {
+	ls.outputBuffer.Reset()
 }
 
 // RunString executes a Lua code string
@@ -159,8 +203,8 @@ func (ls *LuaState) RunFile(filename string) error {
 	return nil
 }
 
-//export go_http_request
-func go_http_request(L *C.lua_State) C.int {
+//export golapis_http_request
+func golapis_http_request(L *C.lua_State) C.int {
 	if C.lua_gettop(L) != 1 {
 		C.lua_pushnil(L)
 		C.lua_pushstring(L, C.CString("http.request expects exactly one argument (url)"))
@@ -206,8 +250,8 @@ func go_http_request(L *C.lua_State) C.int {
 	return 3
 }
 
-//export go_sleep
-func go_sleep(L *C.lua_State) C.int {
+//export golapis_sleep
+func golapis_sleep(L *C.lua_State) C.int {
 	if C.lua_gettop(L) != 1 {
 		C.lua_pushnil(L)
 		C.lua_pushstring(L, C.CString("sleep expects exactly one argument (seconds)"))
@@ -225,4 +269,63 @@ func go_sleep(L *C.lua_State) C.int {
 	time.Sleep(duration)
 
 	return 0
+}
+
+//export golapis_print
+func golapis_print(L *C.lua_State) C.int {
+	// Get the LuaState instance from the registry
+	ls := getLuaStateFromRegistry(L)
+	if ls == nil {
+		return 0
+	}
+
+	nargs := C.lua_gettop(L)
+	for i := C.int(1); i <= nargs; i++ {
+		if i > 1 {
+			ls.writeOutput("\t")
+		}
+		if C.lua_isstring(L, i) != 0 {
+			str := C.GoString(C.lua_tostring_wrapper(L, i))
+			ls.writeOutput(str)
+		} else {
+			// For non-strings, convert to string using Lua's tostring
+			C.lua_getglobal_wrapper(L, C.CString("tostring"))
+			C.lua_pushvalue_wrapper(L, i)
+			if C.lua_pcall(L, 1, 1, 0) == 0 {
+				str := C.GoString(C.lua_tostring_wrapper(L, -1))
+				ls.writeOutput(str)
+				C.lua_pop_wrapper(L, 1)
+			} else {
+				ls.writeOutput("<error converting to string>")
+				C.lua_pop_wrapper(L, 1)
+			}
+		}
+	}
+	ls.writeOutput("\n")
+	return 0
+}
+
+// Helper function to write output to buffer or writer
+func (ls *LuaState) writeOutput(text string) {
+	if ls.outputWriter != nil {
+		ls.outputWriter.Write([]byte(text))
+	} else {
+		ls.outputBuffer.WriteString(text)
+	}
+}
+
+// We need a way to associate the LuaState with the C lua_State
+// This is a simplified approach using a global map
+var luaStateMap = make(map[*C.lua_State]*LuaState)
+
+func (ls *LuaState) registerState() {
+	luaStateMap[ls.state] = ls
+}
+
+func (ls *LuaState) unregisterState() {
+	delete(luaStateMap, ls.state)
+}
+
+func getLuaStateFromRegistry(L *C.lua_State) *LuaState {
+	return luaStateMap[L]
 }
