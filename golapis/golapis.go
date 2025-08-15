@@ -36,15 +36,6 @@ static int run_lua_string(lua_State *L, const char *code) {
     return result;
 }
 
-static int run_lua_file(lua_State *L, const char *filename) {
-    int result = luaL_loadfile(L, filename);
-    if (result != 0) {
-        return result;
-    }
-    result = lua_pcall(L, 0, LUA_MULTRET, 0);
-    fflush(stdout);
-    return result;
-}
 
 static int load_lua_file(lua_State *L, const char *filename) {
     int result = luaL_loadfile(L, filename);
@@ -52,15 +43,8 @@ static int load_lua_file(lua_State *L, const char *filename) {
     return result;
 }
 
-static int call_loaded_lua(lua_State *L) {
-    int result = lua_pcall(L, 0, LUA_MULTRET, 0);
-    fflush(stdout);
-    return result;
-}
-
 static lua_State* create_coroutine(lua_State *L) {
-    lua_State *co = lua_newthread(L);
-    return co;
+    return lua_newthread(L);
 }
 
 static int call_coroutine_with_function(lua_State *L) {
@@ -233,37 +217,12 @@ func (gls *GolapisLuaState) RunString(code string) error {
 	return nil
 }
 
-// RunFile executes a Lua file
-func (gls *GolapisLuaState) RunFile(filename string) error {
-	cfilename := C.CString(filename)
-	defer C.free(unsafe.Pointer(cfilename))
-
-	result := C.run_lua_file(gls.luaState, cfilename)
-	if result != 0 {
-		errMsg := C.GoString(C.get_error_string(gls.luaState))
-		C.pop_stack(gls.luaState, 1)
-		return fmt.Errorf("lua error: %s", errMsg)
-	}
-	return nil
-}
-
 // LoadFile loads a Lua file onto the stack, but doesn't execute it
 func (gls *GolapisLuaState) LoadFile(filename string) error {
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))
 
 	result := C.load_lua_file(gls.luaState, cfilename)
-	if result != 0 {
-		errMsg := C.GoString(C.get_error_string(gls.luaState))
-		C.pop_stack(gls.luaState, 1)
-		return fmt.Errorf("lua error: %s", errMsg)
-	}
-	return nil
-}
-
-// CallLoaded executes the previously loaded Lua code
-func (gls *GolapisLuaState) CallLoaded() error {
-	result := C.call_loaded_lua(gls.luaState)
 	if result != 0 {
 		errMsg := C.GoString(C.get_error_string(gls.luaState))
 		C.pop_stack(gls.luaState, 1)

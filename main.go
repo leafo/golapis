@@ -36,8 +36,13 @@ func runSingleExecution(filename string) {
 	}
 	defer lua.Close()
 
-	if err := lua.RunFile(filename); err != nil {
-		fmt.Printf("Error running Lua file: %v\n", err)
+	if err := lua.LoadFile(filename); err != nil {
+		fmt.Printf("Error loading Lua file: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := lua.CallLoadedAsCoroutine(); err != nil {
+		fmt.Printf("Error executing Lua code: %v\n", err)
 		os.Exit(1)
 	}
 }
