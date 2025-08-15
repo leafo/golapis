@@ -3,8 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
-	"net/http"
 	"os"
 
 	"golapis/golapis"
@@ -45,24 +43,5 @@ func runSingleExecution(filename string) {
 }
 
 func startHTTPServer(filename, port string) {
-	fmt.Printf("Starting HTTP server on port %s with script: %s\n", port, filename)
-
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		lua := golapis.NewLuaState()
-		if lua == nil {
-			http.Error(w, "Failed to create Lua state", http.StatusInternalServerError)
-			return
-		}
-		defer lua.Close()
-
-		// Set up output buffer
-		lua.SetOutputWriter(w)
-
-		if err := lua.RunFile(filename); err != nil {
-			http.Error(w, fmt.Sprintf("Error running Lua file: %v", err), http.StatusInternalServerError)
-			return
-		}
-	})
-
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	golapis.StartHTTPServer(filename, port)
 }

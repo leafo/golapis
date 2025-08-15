@@ -120,6 +120,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"time"
 	"unsafe"
 )
@@ -140,6 +141,7 @@ func NewLuaState() *LuaState {
 	ls := &LuaState{
 		state:        L,
 		outputBuffer: &bytes.Buffer{},
+		outputWriter: os.Stdout,
 	}
 	ls.registerState()
 	ls.SetupGolapis()
