@@ -43,27 +43,6 @@ static int load_lua_file(lua_State *L, const char *filename) {
     return result;
 }
 
-static lua_State* create_coroutine(lua_State *L) {
-    return lua_newthread(L);
-}
-
-static int call_coroutine_with_function(lua_State *L) {
-    // Create a new coroutine
-    lua_State *co = lua_newthread(L);
-
-    // Push a copy of the function to the coroutine
-    lua_pushvalue(L, -2);  // Copy the function (which should be at -2 now due to thread at -1)
-    lua_xmove(L, co, 1);   // Move copy to coroutine
-
-    int result = lua_resume(co, 0);
-
-    // Clean up: remove the thread from main stack
-    lua_pop(L, 1);
-
-    fflush(stdout);
-    return result;
-}
-
 static const char* get_error_string(lua_State *L) {
     return lua_tostring(L, -1);
 }
@@ -149,6 +128,23 @@ type GolapisLuaState struct {
 	outputWriter io.Writer
 }
 
+// ThreadStatus represents the execution state of a LuaThread
+type ThreadStatus int
+
+const (
+	ThreadCreated ThreadStatus = iota
+	ThreadRunning
+	ThreadYielded
+	ThreadDead
+)
+
+// LuaThread represents the execution of Lua code in a coroutine
+type LuaThread struct {
+	state  *GolapisLuaState
+	co     *C.lua_State
+	status ThreadStatus
+}
+
 // NewGolapisLuaState creates a new Lua state and initializes it with golapis functions
 func NewGolapisLuaState() *GolapisLuaState {
 	L := C.new_lua_state()
@@ -222,34 +218,84 @@ func (gls *GolapisLuaState) LoadFile(filename string) error {
 	return nil
 }
 
-// CallLoadedAsCoroutine executes the previously loaded Lua code as a coroutine
-func (gls *GolapisLuaState) CallLoadedAsCoroutine() error {
-	// Create coroutine and register it to use the same GolapisLuaState for golapis functions
-	co := C.create_coroutine(gls.luaState)
+// NewThread creates a new LuaThread from the function currently on top of the stack
+func (gls *GolapisLuaState) NewThread() (*LuaThread, error) {
+	// Create coroutine
+	co := C.lua_newthread(gls.luaState)
 	if co == nil {
-		return fmt.Errorf("failed to create coroutine")
+		return nil, fmt.Errorf("failed to create thread")
 	}
 
-	// Register the coroutine to use the same GolapisLuaState for golapis functions
-	luaStateMap[co] = gls
-	defer delete(luaStateMap, co)
+	// Stack is now: [function, thread]
+	// Copy the function and move it to the coroutine
+	C.lua_pushvalue(gls.luaState, -2)
+	C.lua_xmove(gls.luaState, co, 1)
 
-	// The loaded function should be at top of stack (-1)
-	// After lua_newthread, stack is: [function, thread]
-	// So function is now at -2, thread at -1
-	C.lua_pushvalue(gls.luaState, -2) // Copy the function
-	C.lua_xmove(gls.luaState, co, 1)  // Move copy to coroutine
-
-	// Remove the thread object from main stack
+	// Remove the thread from main stack (function remains)
 	C.lua_pop_wrapper(gls.luaState, 1)
 
-	// Resume the coroutine
-	result := C.lua_resume(co, 0)
-
-	if result != 0 && result != 1 { // LUA_YIELD = 1, which is OK for coroutines
-		errMsg := C.GoString(C.get_error_string(co))
-		return fmt.Errorf("lua coroutine error: %s", errMsg)
+	thread := &LuaThread{
+		state:  gls,
+		co:     co,
+		status: ThreadCreated,
 	}
+
+	// Register coroutine in map for golapis functions
+	luaStateMap[co] = gls
+
+	return thread, nil
+}
+
+// Resume starts or continues execution of the thread
+func (t *LuaThread) Resume() error {
+	if t.status == ThreadDead {
+		return fmt.Errorf("cannot resume dead thread")
+	}
+
+	t.status = ThreadRunning
+	result := C.lua_resume(t.co, 0)
+
+	switch result {
+	case 0: // LUA_OK
+		t.status = ThreadDead
+		return nil
+	case 1: // LUA_YIELD
+		t.status = ThreadYielded
+		return nil
+	default:
+		t.status = ThreadDead
+		errMsg := C.GoString(C.get_error_string(t.co))
+		return fmt.Errorf("lua error: %s", errMsg)
+	}
+}
+
+// Status returns the current execution status of the thread
+func (t *LuaThread) Status() ThreadStatus {
+	return t.status
+}
+
+// Close cleans up the thread resources
+func (t *LuaThread) Close() {
+	if t.co != nil {
+		delete(luaStateMap, t.co)
+		t.co = nil
+	}
+}
+
+// CallLoadedAsCoroutine executes the previously loaded Lua code as a coroutine
+func (gls *GolapisLuaState) CallLoadedAsCoroutine() error {
+	thread, err := gls.NewThread()
+	if err != nil {
+		return err
+	}
+	defer thread.Close()
+
+	if err := thread.Resume(); err != nil {
+		return fmt.Errorf("lua coroutine error: %w", err)
+	}
+
+	// Note: Currently ignores ThreadYielded status
+	// Future: Add resume loop when sleep yields
 	return nil
 }
 
