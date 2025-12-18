@@ -107,6 +107,21 @@ static void lua_pop_wrapper(lua_State *L, int n) {
     lua_pop(L, n);
 }
 
+static void lua_setfield_wrapper(lua_State *L, int idx, const char *k) {
+    lua_setfield(L, idx, k);
+}
+
+static int luaL_ref_wrapper(lua_State *L, int t) {
+    return luaL_ref(L, t);
+}
+
+static void luaL_unref_wrapper(lua_State *L, int t, int ref) {
+    luaL_unref(L, t, ref);
+}
+
+static void lua_rawgeti_wrapper(lua_State *L, int idx, int n) {
+    lua_rawgeti(L, idx, n);
+}
 
 */
 import "C"
@@ -143,6 +158,7 @@ type LuaThread struct {
 	state  *GolapisLuaState
 	co     *C.lua_State
 	status ThreadStatus
+	ctxRef C.int // Lua registry reference to the context table
 }
 
 // NewGolapisLuaState creates a new Lua state and initializes it with golapis functions
@@ -234,10 +250,15 @@ func (gls *GolapisLuaState) NewThread() (*LuaThread, error) {
 	// Remove the thread from main stack (function remains)
 	C.lua_pop_wrapper(gls.luaState, 1)
 
+	// Create context table and store registry reference
+	C.lua_newtable_wrapper(gls.luaState)
+	ctxRef := C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
+
 	thread := &LuaThread{
 		state:  gls,
 		co:     co,
 		status: ThreadCreated,
+		ctxRef: ctxRef,
 	}
 
 	// Register coroutine in map for golapis functions
@@ -246,14 +267,44 @@ func (gls *GolapisLuaState) NewThread() (*LuaThread, error) {
 	return thread, nil
 }
 
+// setCtx assigns the thread's context table to golapis.ctx
+func (t *LuaThread) setCtx() {
+	L := t.state.luaState
+	cGolapis := C.CString("golapis")
+	defer C.free(unsafe.Pointer(cGolapis))
+	cCtx := C.CString("ctx")
+	defer C.free(unsafe.Pointer(cCtx))
+
+	C.lua_getglobal_wrapper(L, cGolapis)
+	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, C.int(t.ctxRef))
+	C.lua_setfield_wrapper(L, -2, cCtx)
+	C.lua_pop_wrapper(L, 1) // pop golapis table
+}
+
+// clearCtx sets golapis.ctx to nil
+func (t *LuaThread) clearCtx() {
+	L := t.state.luaState
+	cGolapis := C.CString("golapis")
+	defer C.free(unsafe.Pointer(cGolapis))
+	cCtx := C.CString("ctx")
+	defer C.free(unsafe.Pointer(cCtx))
+
+	C.lua_getglobal_wrapper(L, cGolapis)
+	C.lua_pushnil(L)
+	C.lua_setfield_wrapper(L, -2, cCtx)
+	C.lua_pop_wrapper(L, 1) // pop golapis table
+}
+
 // Resume starts or continues execution of the thread
 func (t *LuaThread) Resume() error {
 	if t.status == ThreadDead {
 		return fmt.Errorf("cannot resume dead thread")
 	}
 
+	t.setCtx() // Set golapis.ctx before resuming
 	t.status = ThreadRunning
 	result := C.lua_resume(t.co, 0)
+	t.clearCtx() // Clear golapis.ctx after yield/finish
 
 	switch result {
 	case 0: // LUA_OK
@@ -278,6 +329,11 @@ func (t *LuaThread) Status() ThreadStatus {
 func (t *LuaThread) Close() {
 	if t.co != nil {
 		delete(luaStateMap, t.co)
+		// Release the context table reference
+		if t.ctxRef != 0 {
+			C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, t.ctxRef)
+			t.ctxRef = 0
+		}
 		t.co = nil
 	}
 }
