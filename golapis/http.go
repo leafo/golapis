@@ -22,17 +22,14 @@ func StartHTTPServer(filename, port string) {
 		}
 		defer lua.Close()
 
+		lua.Start()
+		defer lua.Stop()
+
 		// Set up output writer to send response to HTTP client
 		lua.SetOutputWriter(w)
 
-		// Load and execute the Lua file
-		if err := lua.LoadFile(filename); err != nil {
-			http.Error(w, fmt.Sprintf("Error loading Lua file: %v", err), http.StatusInternalServerError)
-			logHTTPRequest(r, http.StatusInternalServerError, 0, time.Since(start))
-			return
-		}
-
-		if err := lua.CallLoadedAsCoroutine(); err != nil {
+		// Execute the Lua file
+		if err := lua.RunFile(filename); err != nil {
 			http.Error(w, fmt.Sprintf("Error executing Lua code: %v", err), http.StatusInternalServerError)
 			logHTTPRequest(r, http.StatusInternalServerError, 0, time.Since(start))
 			return

@@ -123,6 +123,10 @@ static void lua_rawgeti_wrapper(lua_State *L, int idx, int n) {
     lua_rawgeti(L, idx, n);
 }
 
+static int lua_yield_wrapper(lua_State *L, int nresults) {
+    return lua_yield(L, nresults);
+}
+
 */
 import "C"
 import (
@@ -141,6 +145,8 @@ type GolapisLuaState struct {
 	luaState     *C.lua_State
 	outputBuffer *bytes.Buffer
 	outputWriter io.Writer
+	eventChan    chan *StateEvent // all operations go through this channel
+	running      bool             // is event loop running?
 }
 
 // ThreadStatus represents the execution state of a LuaThread
@@ -153,12 +159,45 @@ const (
 	ThreadDead
 )
 
+// StateEventType represents the type of event sent to the state's event loop
+type StateEventType int
+
+const (
+	EventRunFile StateEventType = iota
+	EventRunString
+	EventResumeThread // async operation completed
+	EventStop         // shutdown the event loop
+)
+
+// StateEvent represents an operation to be performed on the Lua state
+type StateEvent struct {
+	Type StateEventType
+
+	// For RunFile/RunString
+	Filename string
+	Code     string
+
+	// For ResumeThread (async completion)
+	Thread     *LuaThread
+	ReturnVals []interface{}
+
+	// Response channel - caller blocks on this
+	Response chan *StateResponse
+}
+
+// StateResponse represents the result of a state operation
+type StateResponse struct {
+	Error  error
+	Output string
+}
+
 // LuaThread represents the execution of Lua code in a coroutine
 type LuaThread struct {
-	state  *GolapisLuaState
-	co     *C.lua_State
-	status ThreadStatus
-	ctxRef C.int // Lua registry reference to the context table
+	state        *GolapisLuaState
+	co           *C.lua_State
+	status       ThreadStatus
+	ctxRef       C.int               // Lua registry reference to the context table
+	responseChan chan *StateResponse // channel to send final response when thread completes
 }
 
 // NewGolapisLuaState creates a new Lua state and initializes it with golapis functions
@@ -171,6 +210,7 @@ func NewGolapisLuaState() *GolapisLuaState {
 		luaState:     L,
 		outputBuffer: &bytes.Buffer{},
 		outputWriter: os.Stdout,
+		eventChan:    make(chan *StateEvent, 100), // buffered channel for events
 	}
 	gls.registerState()
 	gls.SetupGolapis()
@@ -206,8 +246,132 @@ func (gls *GolapisLuaState) ClearOutput() {
 	gls.outputBuffer.Reset()
 }
 
-// RunString executes a Lua code string
-func (gls *GolapisLuaState) RunString(code string) error {
+// Start launches the event loop goroutine
+func (gls *GolapisLuaState) Start() {
+	gls.running = true
+	go gls.eventLoop()
+}
+
+// Stop shuts down the event loop
+func (gls *GolapisLuaState) Stop() {
+	if !gls.running {
+		return
+	}
+	resp := make(chan *StateResponse, 1)
+	gls.eventChan <- &StateEvent{
+		Type:     EventStop,
+		Response: resp,
+	}
+	<-resp
+}
+
+// RunFile sends a request to execute a Lua file
+func (gls *GolapisLuaState) RunFile(filename string) error {
+	resp := make(chan *StateResponse, 1)
+	gls.eventChan <- &StateEvent{
+		Type:     EventRunFile,
+		Filename: filename,
+		Response: resp,
+	}
+	result := <-resp
+	return result.Error
+}
+
+// eventLoop is the main event loop that processes all state operations
+func (gls *GolapisLuaState) eventLoop() {
+	for event := range gls.eventChan {
+		var resp *StateResponse
+
+		switch event.Type {
+		case EventRunFile:
+			resp = gls.handleRunFile(event)
+		case EventRunString:
+			resp = gls.handleRunString(event)
+		case EventResumeThread:
+			resp = gls.handleResumeThread(event)
+		case EventStop:
+			gls.running = false
+			if event.Response != nil {
+				event.Response <- &StateResponse{}
+			}
+			return
+		}
+
+		// If resp is nil, the handler took ownership of the response channel
+		// (e.g., thread is still running and will send response when done)
+		if resp != nil && event.Response != nil {
+			event.Response <- resp
+		}
+	}
+}
+
+// handleRunFile executes a Lua file (internal, called by event loop)
+// Returns nil if thread is still running (response will be sent later via thread.responseChan)
+func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
+	if err := gls.loadFile(event.Filename); err != nil {
+		return &StateResponse{Error: err}
+	}
+
+	thread, err := gls.newThread()
+	if err != nil {
+		return &StateResponse{Error: err}
+	}
+
+	// Store the response channel on the thread for later
+	thread.responseChan = event.Response
+
+	if err := thread.resume(); err != nil {
+		thread.close()
+		return &StateResponse{Error: err}
+	}
+
+	// If thread is dead, clean up and respond immediately
+	if thread.status == ThreadDead {
+		thread.close()
+		return &StateResponse{}
+	}
+
+	// Thread yielded - don't respond yet, response will be sent when thread completes
+	// Return nil to signal that event loop should NOT send response
+	return nil
+}
+
+// handleRunString executes a Lua code string (internal, called by event loop)
+func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
+	if err := gls.runString(event.Code); err != nil {
+		return &StateResponse{Error: err}
+	}
+	return &StateResponse{}
+}
+
+// handleResumeThread resumes a thread after an async operation completes
+// Returns nil because response is sent via thread.responseChan
+func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse {
+	thread := event.Thread
+
+	if err := thread.resumeWithValues(event.ReturnVals); err != nil {
+		// Send error to the original caller
+		if thread.responseChan != nil {
+			thread.responseChan <- &StateResponse{Error: err}
+		}
+		thread.close()
+		return nil
+	}
+
+	if thread.status == ThreadDead {
+		// Thread completed - send success to the original caller
+		if thread.responseChan != nil {
+			thread.responseChan <- &StateResponse{}
+		}
+		thread.close()
+	}
+
+	// Response sent via thread.responseChan, not through event.Response
+	return nil
+}
+
+// runString executes a Lua code string (internal)
+func (gls *GolapisLuaState) runString(code string) error {
 	ccode := C.CString(code)
 	defer C.free(unsafe.Pointer(ccode))
 
@@ -220,8 +384,8 @@ func (gls *GolapisLuaState) RunString(code string) error {
 	return nil
 }
 
-// LoadFile loads a Lua file onto the stack, but doesn't execute it
-func (gls *GolapisLuaState) LoadFile(filename string) error {
+// loadFile loads a Lua file onto the stack, but doesn't execute it (internal)
+func (gls *GolapisLuaState) loadFile(filename string) error {
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))
 
@@ -234,8 +398,8 @@ func (gls *GolapisLuaState) LoadFile(filename string) error {
 	return nil
 }
 
-// NewThread creates a new LuaThread from the function currently on top of the stack
-func (gls *GolapisLuaState) NewThread() (*LuaThread, error) {
+// newThread creates a new LuaThread from the function currently on top of the stack (internal)
+func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 	// Create coroutine
 	co := C.lua_newthread(gls.luaState)
 	if co == nil {
@@ -261,8 +425,8 @@ func (gls *GolapisLuaState) NewThread() (*LuaThread, error) {
 		ctxRef: ctxRef,
 	}
 
-	// Register coroutine in map for golapis functions
-	luaStateMap[co] = gls
+	// Register thread in map so async ops can find it
+	luaThreadMap[co] = thread
 
 	return thread, nil
 }
@@ -295,8 +459,8 @@ func (t *LuaThread) clearCtx() {
 	C.lua_pop_wrapper(L, 1) // pop golapis table
 }
 
-// Resume starts or continues execution of the thread
-func (t *LuaThread) Resume() error {
+// resume starts or continues execution of the thread (internal)
+func (t *LuaThread) resume() error {
 	if t.status == ThreadDead {
 		return fmt.Errorf("cannot resume dead thread")
 	}
@@ -320,15 +484,63 @@ func (t *LuaThread) Resume() error {
 	}
 }
 
-// Status returns the current execution status of the thread
-func (t *LuaThread) Status() ThreadStatus {
-	return t.status
+// resumeWithValues pushes return values onto the stack and resumes the thread
+func (t *LuaThread) resumeWithValues(values []interface{}) error {
+	if t.status == ThreadDead {
+		return fmt.Errorf("cannot resume dead thread")
+	}
+
+	// Push return values onto coroutine stack
+	nret := C.int(0)
+	for _, v := range values {
+		switch val := v.(type) {
+		case string:
+			cstr := C.CString(val)
+			C.lua_pushstring(t.co, cstr)
+			C.free(unsafe.Pointer(cstr))
+		case int:
+			C.lua_pushinteger(t.co, C.lua_Integer(val))
+		case int64:
+			C.lua_pushinteger(t.co, C.lua_Integer(val))
+		case float64:
+			C.lua_pushnumber(t.co, C.lua_Number(val))
+		case bool:
+			if val {
+				C.lua_pushboolean(t.co, 1)
+			} else {
+				C.lua_pushboolean(t.co, 0)
+			}
+		case nil:
+			C.lua_pushnil(t.co)
+		default:
+			C.lua_pushnil(t.co) // unsupported type, push nil
+		}
+		nret++
+	}
+
+	t.setCtx() // Set golapis.ctx before resuming
+	t.status = ThreadRunning
+	result := C.lua_resume(t.co, nret)
+	t.clearCtx() // Clear golapis.ctx after yield/finish
+
+	switch result {
+	case 0: // LUA_OK
+		t.status = ThreadDead
+		return nil
+	case 1: // LUA_YIELD
+		t.status = ThreadYielded
+		return nil
+	default:
+		t.status = ThreadDead
+		errMsg := C.GoString(C.get_error_string(t.co))
+		return fmt.Errorf("lua error: %s", errMsg)
+	}
 }
 
-// Close cleans up the thread resources
-func (t *LuaThread) Close() {
+// close cleans up the thread resources (internal)
+func (t *LuaThread) close() {
 	if t.co != nil {
-		delete(luaStateMap, t.co)
+		delete(luaThreadMap, t.co)
 		// Release the context table reference
 		if t.ctxRef != 0 {
 			C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, t.ctxRef)
@@ -336,23 +548,6 @@ func (t *LuaThread) Close() {
 		}
 		t.co = nil
 	}
-}
-
-// CallLoadedAsCoroutine executes the previously loaded Lua code as a coroutine
-func (gls *GolapisLuaState) CallLoadedAsCoroutine() error {
-	thread, err := gls.NewThread()
-	if err != nil {
-		return err
-	}
-	defer thread.Close()
-
-	if err := thread.Resume(); err != nil {
-		return fmt.Errorf("lua coroutine error: %w", err)
-	}
-
-	// Note: Currently ignores ThreadYielded status
-	// Future: Add resume loop when sleep yields
-	return nil
 }
 
 //export golapis_http_request
@@ -416,11 +611,29 @@ func golapis_sleep(L *C.lua_State) C.int {
 		return 2
 	}
 
-	seconds := C.lua_tonumber(L, 1)
-	duration := time.Duration(float64(seconds) * float64(time.Second))
-	time.Sleep(duration)
+	seconds := float64(C.lua_tonumber(L, 1))
 
-	return 0
+	// Get the current thread
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushnil(L)
+		C.lua_pushstring(L, C.CString("sleep: could not find thread context"))
+		return 2
+	}
+
+	// Start async timer that will send to eventChan when done
+	go func() {
+		time.Sleep(time.Duration(seconds * float64(time.Second)))
+		thread.state.eventChan <- &StateEvent{
+			Type:       EventResumeThread,
+			Thread:     thread,
+			ReturnVals: nil, // sleep returns nothing
+			Response:   nil, // no response needed for internal events
+		}
+	}()
+
+	// Yield with 0 values (nginx-lua pattern)
+	return C.lua_yield_wrapper(L, 0)
 }
 
 //export golapis_print
@@ -470,6 +683,10 @@ func (gls *GolapisLuaState) writeOutput(text string) {
 // This is a simplified approach using a global map
 var luaStateMap = make(map[*C.lua_State]*GolapisLuaState)
 
+// luaThreadMap maps coroutine lua_State pointers to LuaThread objects
+// This allows async operations to find their thread context
+var luaThreadMap = make(map[*C.lua_State]*LuaThread)
+
 func (gls *GolapisLuaState) registerState() {
 	luaStateMap[gls.luaState] = gls
 }
@@ -479,5 +696,17 @@ func (gls *GolapisLuaState) unregisterState() {
 }
 
 func getLuaStateFromRegistry(L *C.lua_State) *GolapisLuaState {
-	return luaStateMap[L]
+	// First check if L is a main state
+	if gls, ok := luaStateMap[L]; ok {
+		return gls
+	}
+	// Otherwise, L might be a coroutine - find its thread and get parent state
+	if thread, ok := luaThreadMap[L]; ok {
+		return thread.state
+	}
+	return nil
+}
+
+func getLuaThreadFromRegistry(L *C.lua_State) *LuaThread {
+	return luaThreadMap[L]
 }
