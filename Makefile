@@ -1,4 +1,4 @@
-.PHONY: build clean luajit test
+.PHONY: build build-debug clean luajit test
 
 BINARY_NAME=golapis
 
@@ -12,6 +12,11 @@ build: luajit
 	@echo "Building golapis..."
 	@mkdir -p bin
 	CGO_ENABLED=1 go build -o bin/$(BINARY_NAME) -ldflags="-s -w" .
+
+build-debug: luajit
+	@echo "Building golapis (debug)..."
+	@mkdir -p bin
+	CGO_ENABLED=1 go build -tags debug -o bin/$(BINARY_NAME)-debug .
 
 clean:
 	@echo "Cleaning..."

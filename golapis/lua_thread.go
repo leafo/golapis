@@ -59,6 +59,9 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 
 	// Register thread in map so async ops can find it
 	luaThreadMap[co] = thread
+	if debugEnabled {
+		debugLog("newThread: created thread co=%p", co)
+	}
 
 	return thread, nil
 }
@@ -93,6 +96,9 @@ func (t *LuaThread) resume() error {
 		return fmt.Errorf("cannot resume dead thread")
 	}
 
+	if debugEnabled {
+		debugLog("thread.resume: co=%p starting", t.co)
+	}
 	t.setCtx() // Set golapis.ctx before resuming
 	t.status = ThreadRunning
 	result := C.lua_resume(t.co, 0)
@@ -101,13 +107,22 @@ func (t *LuaThread) resume() error {
 	switch result {
 	case 0: // LUA_OK
 		t.status = ThreadDead
+		if debugEnabled {
+			debugLog("thread.resume: co=%p completed", t.co)
+		}
 		return nil
 	case 1: // LUA_YIELD
 		t.status = ThreadYielded
+		if debugEnabled {
+			debugLog("thread.resume: co=%p yielded", t.co)
+		}
 		return nil
 	default:
 		t.status = ThreadDead
 		errMsg := C.GoString(C.lua_tostring_wrapper(t.co, -1))
+		if debugEnabled {
+			debugLog("thread.resume: co=%p error: %s", t.co, errMsg)
+		}
 		return fmt.Errorf("lua error: %s", errMsg)
 	}
 }
@@ -116,6 +131,10 @@ func (t *LuaThread) resume() error {
 func (t *LuaThread) resumeWithValues(values []interface{}) error {
 	if t.status == ThreadDead {
 		return fmt.Errorf("cannot resume dead thread")
+	}
+
+	if debugEnabled {
+		debugLog("thread.resumeWithValues: co=%p resuming with %d values", t.co, len(values))
 	}
 
 	// Push return values onto coroutine stack
@@ -154,13 +173,22 @@ func (t *LuaThread) resumeWithValues(values []interface{}) error {
 	switch result {
 	case 0: // LUA_OK
 		t.status = ThreadDead
+		if debugEnabled {
+			debugLog("thread.resumeWithValues: co=%p completed", t.co)
+		}
 		return nil
 	case 1: // LUA_YIELD
 		t.status = ThreadYielded
+		if debugEnabled {
+			debugLog("thread.resumeWithValues: co=%p yielded", t.co)
+		}
 		return nil
 	default:
 		t.status = ThreadDead
 		errMsg := C.GoString(C.lua_tostring_wrapper(t.co, -1))
+		if debugEnabled {
+			debugLog("thread.resumeWithValues: co=%p error: %s", t.co, errMsg)
+		}
 		return fmt.Errorf("lua error: %s", errMsg)
 	}
 }
@@ -168,6 +196,9 @@ func (t *LuaThread) resumeWithValues(values []interface{}) error {
 // close cleans up the thread resources (internal)
 func (t *LuaThread) close() {
 	if t.co != nil {
+		if debugEnabled {
+			debugLog("thread.close: co=%p", t.co)
+		}
 		delete(luaThreadMap, t.co)
 		// Release the context table reference
 		if t.ctxRef != 0 {
