@@ -224,6 +224,18 @@ func (gls *GolapisLuaState) RunFile(filename string) error {
 	return result.Error
 }
 
+// RunString sends a request to execute a Lua code string
+func (gls *GolapisLuaState) RunString(code string) error {
+	resp := make(chan *StateResponse, 1)
+	gls.eventChan <- &StateEvent{
+		Type:     EventRunString,
+		Code:     code,
+		Response: resp,
+	}
+	result := <-resp
+	return result.Error
+}
+
 // eventLoop is the main event loop that processes all state operations
 func (gls *GolapisLuaState) eventLoop() {
 	for event := range gls.eventChan {

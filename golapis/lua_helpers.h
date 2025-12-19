@@ -54,4 +54,19 @@ static int luaL_error_wrapper(lua_State *L, const char *msg) {
     return luaL_error(L, "%s", msg);
 }
 
+// For table iteration
+static int lua_next_wrapper(lua_State *L, int idx) {
+    return lua_next(L, idx);
+}
+
+// For getting string with length (handles embedded NULs)
+static const char* lua_tolstring_wrapper(lua_State *L, int idx, size_t *len) {
+    return lua_tolstring(L, idx, len);
+}
+
+// For checking lightuserdata value
+static void* lua_touserdata_wrapper(lua_State *L, int idx) {
+    return lua_touserdata(L, idx);
+}
+
 #endif

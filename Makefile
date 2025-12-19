@@ -23,8 +23,6 @@ clean:
 	rm -f bin/$(BINARY_NAME)
 	$(MAKE) -C luajit clean
 
-test: build
-	@echo "Testing with simple Lua script..."
-	@echo 'print("Hello from Lua!")' > test.lua
-	@./bin/$(BINARY_NAME) test.lua
-	@rm -f test.lua
+test: luajit
+	@echo "Running tests..."
+	CGO_ENABLED=1 go test ./golapis -v

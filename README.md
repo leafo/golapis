@@ -46,13 +46,22 @@ if err != nil {
 }
 ```
 
+#### Execute a Lua string
+
+```go
+err := lua.RunString(`golapis.say("Hello from Lua!")`)
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+}
+```
+
 #### Wait for threads
 
 `Wait()` blocks until all active threads have completed execution.
 
 ### Output Handling
 
-By default, output from `golapis.print()` goes to stdout. You can redirect it:
+By default, output from `golapis.say()` and `golapis.print()` goes to stdout. You can redirect it:
 
 ```go
 lua.SetOutputWriter(myWriter)
@@ -93,22 +102,24 @@ The `golapis` global table is available in Lua scripts:
 
 | Function | Description |
 |----------|-------------|
-| `golapis.print(...)` | Print values to the configured output writer |
+| `golapis.say(...)` | Output values followed by newline, returns `1` or `nil, err` |
+| `golapis.print(...)` | Output values without newline, returns `1` or `nil, err` |
 | `golapis.sleep(seconds)` | Async sleep (yields the coroutine) |
 | `golapis.http.request(url)` | HTTP GET request, returns `body, status, headers` |
+| `golapis.null` | Null sentinel value (outputs as `"null"`) |
 | `golapis.version` | Library version string |
 
 ### Example Lua Script
 
 ```lua
-golapis.print("Hello from Lua!")
-golapis.print("Version:", golapis.version)
+golapis.say("Hello from Lua!")
+golapis.say("Version: ", golapis.version)
 
 golapis.sleep(1)
-golapis.print("Slept for 1 second")
+golapis.say("Slept for 1 second")
 
 local body, status, headers = golapis.http.request("https://example.com")
-golapis.print("Status:", status)
+golapis.say("Status: ", status)
 ```
 
 ## ngx API Compatibility
@@ -117,12 +128,42 @@ golapis implements a subset of the OpenResty/nginx-lua API:
 
 | golapis | ngx equivalent | Notes |
 |---------|----------------|-------|
+| `golapis.say(...)` | `ngx.say(...)` | Output with newline, nginx-compatible type coercion |
+| `golapis.print(...)` | `ngx.print(...)` | Output without newline, nginx-compatible type coercion |
+| `golapis.null` | `ngx.null` | Null sentinel value |
 | `golapis.sleep(seconds)` | `ngx.sleep(seconds)` | Async sleep, yields coroutine |
-| `golapis.print(...)` | `ngx.print(...)` | Output to response/stdout |
 | `golapis.req.get_uri_args([max])` | `ngx.req.get_uri_args([max])` | Parse query string parameters |
 | `golapis.timer.at(delay, cb, ...)` | `ngx.timer.at(delay, cb, ...)` | Schedule callback after delay |
 | `golapis.var.*` | `ngx.var.*` | Request variables (read-only, HTTP mode only) |
 | `golapis.ctx` | `ngx.ctx` | Per-request Lua table for storing data |
+
+### golapis.say / golapis.print
+
+These functions match nginx-lua's output behavior:
+
+- **No separator**: Arguments are concatenated directly with no separator between them
+- **Type coercion**: Values are converted to strings following nginx-lua rules:
+  - `string` → literal bytes (binary safe)
+  - `number` → decimal string (integers in int32 range use `%d`, others use `%.14g`)
+  - `boolean` → `"true"` or `"false"`
+  - `nil` → `"nil"`
+  - `golapis.null` → `"null"`
+  - `table` → array elements concatenated recursively
+- **Array tables**: Tables must be array-style (sequential integer keys starting at 1). Non-array tables return an error.
+- **Return values**: Returns `1` on success, or `nil, error_string` on error
+
+```lua
+-- Examples
+golapis.say("hello")                    -- "hello\n"
+golapis.say("a", "b", "c")              -- "abc\n" (no separator)
+golapis.say("count: ", 42)              -- "count: 42\n"
+golapis.say({"a", "b", "c"})            -- "abc\n" (array concatenation)
+golapis.say({[1]="a", [3]="c"})         -- "anilc\n" (sparse array)
+
+golapis.print("no newline")             -- "no newline" (no trailing \n)
+
+local ok, err = golapis.say({foo="bar"}) -- nil, "bad argument #1..." (non-array)
+```
 
 ### golapis.var Variables
 

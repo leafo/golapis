@@ -7,6 +7,7 @@ package golapis
 extern int golapis_sleep(lua_State *L);
 extern int golapis_http_request(lua_State *L);
 extern int golapis_print(lua_State *L);
+extern int golapis_say(lua_State *L);
 extern int golapis_req_get_uri_args(lua_State *L);
 extern int golapis_timer_at(lua_State *L);
 extern int golapis_debug_cancel_timers(lua_State *L);
@@ -23,6 +24,10 @@ static int c_http_request_wrapper(lua_State *L) {
 
 static int c_print_wrapper(lua_State *L) {
     return golapis_print(L);
+}
+
+static int c_say_wrapper(lua_State *L) {
+    return golapis_say(L);
 }
 
 static int c_req_get_uri_args_wrapper(lua_State *L) {
@@ -56,6 +61,13 @@ static int setup_golapis_global(lua_State *L) {
 
     lua_pushcfunction(L, c_print_wrapper);
     lua_setfield(L, -2, "print");
+
+    lua_pushcfunction(L, c_say_wrapper);
+    lua_setfield(L, -2, "say");
+
+    // Register golapis.null as lightuserdata(NULL)
+    lua_pushlightuserdata(L, NULL);
+    lua_setfield(L, -2, "null");
 
     // Create http table
     lua_newtable(L);
@@ -101,10 +113,15 @@ static int setup_golapis_global(lua_State *L) {
 */
 import "C"
 import (
+	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -207,51 +224,226 @@ func golapis_sleep(L *C.lua_State) C.int {
 	return C.lua_yield_wrapper(L, 0)
 }
 
-//export golapis_print
-func golapis_print(L *C.lua_State) C.int {
-	// Get writer from thread (preferred) or fall back to state's writer
-	var writer io.Writer
+// Maximum recursion depth for table coercion to prevent stack overflow
+const maxTableDepth = 100
+
+// formatLuaNumber formats a number following nginx-lua conventions:
+// - Integers within int32 range use decimal format
+// - Others use %.14g format (14 significant digits)
+func formatLuaNumber(num float64) string {
+	// Check if it's an integer within int32 range
+	intVal := int32(num)
+	if num == float64(intVal) && num >= math.MinInt32 && num <= math.MaxInt32 {
+		return strconv.FormatInt(int64(intVal), 10)
+	}
+	return strconv.FormatFloat(num, 'g', 14, 64)
+}
+
+// badArgError returns a user-facing error message for golapis functions.
+func badArgError(argNum int, funcName, gotType string) string {
+	return fmt.Sprintf("bad argument #%d to 'golapis.%s' (string, number, boolean, nil, golapis.null, or array table expected, got %s)", argNum, funcName, gotType)
+}
+
+// getOutputWriter returns the output writer for the current context
+func getOutputWriter(L *C.lua_State) io.Writer {
 	thread := getLuaThreadFromRegistry(L)
 	if thread != nil && thread.outputWriter != nil {
-		writer = thread.outputWriter
-	} else {
-		// Fallback for CLI mode or non-thread context
-		gls := getLuaStateFromRegistry(L)
-		if gls != nil {
-			writer = gls.outputWriter
+		return thread.outputWriter
+	}
+	// Fallback for CLI mode or non-thread context
+	gls := getLuaStateFromRegistry(L)
+	if gls != nil {
+		return gls.outputWriter
+	}
+	return nil
+}
+
+// validateArrayTable validates that the table at idx is array-style and returns the max key.
+// Returns error if non-array keys are found.
+func validateArrayTable(L *C.lua_State, idx C.int) (int, error) {
+	maxKey := 0
+
+	// Push nil to start iteration
+	C.lua_pushnil(L)
+	for C.lua_next_wrapper(L, idx) != 0 {
+		// Stack: key at -2, value at -1
+
+		// Check if key is a number
+		if C.lua_type(L, -2) != C.LUA_TNUMBER {
+			C.lua_pop_wrapper(L, 2) // pop key and value
+			return 0, fmt.Errorf("non-array table found")
+		}
+
+		keyNum := float64(C.lua_tonumber(L, -2))
+		keyInt := int(keyNum)
+
+		// Check if key is a positive integer
+		if float64(keyInt) != keyNum || keyInt < 1 {
+			C.lua_pop_wrapper(L, 2)
+			return 0, fmt.Errorf("non-array table found")
+		}
+
+		if keyInt > maxKey {
+			maxKey = keyInt
+		}
+
+		// Pop value, keep key for next iteration
+		C.lua_pop_wrapper(L, 1)
+	}
+
+	return maxKey, nil
+}
+
+// coerceTableToBytes converts an array-style table to bytes
+func coerceTableToBytes(L *C.lua_State, idx C.int, buf *bytes.Buffer, depth int, argNum int, funcName string) error {
+	if depth > maxTableDepth {
+		return fmt.Errorf("table recursion too deep")
+	}
+
+	// Convert negative index to absolute
+	if idx < 0 {
+		idx = C.lua_gettop(L) + idx + 1
+	}
+
+	// Validate it's an array table and find max key
+	maxKey, err := validateArrayTable(L, idx)
+	if err != nil {
+		return errors.New(badArgError(argNum, funcName, err.Error()))
+	}
+
+	if maxKey == 0 {
+		// Empty table - nothing to output
+		return nil
+	}
+
+	// Iterate 1 through maxKey
+	for i := 1; i <= maxKey; i++ {
+		C.lua_rawgeti_wrapper(L, idx, C.int(i))
+		err := coerceValueToBytes(L, -1, buf, depth+1, argNum, funcName)
+		C.lua_pop_wrapper(L, 1)
+		if err != nil {
+			return err
 		}
 	}
 
-	if writer == nil {
-		return 0
-	}
+	return nil
+}
 
-	nargs := C.lua_gettop(L)
-	for i := C.int(1); i <= nargs; i++ {
-		if i > 1 {
-			writer.Write([]byte("\t"))
+// coerceValueToBytes converts the Lua value at stack index to bytes
+// Returns error for unsupported types
+func coerceValueToBytes(L *C.lua_State, idx C.int, buf *bytes.Buffer, depth int, argNum int, funcName string) error {
+	luaType := C.lua_type(L, idx)
+
+	switch luaType {
+	case C.LUA_TSTRING:
+		// Get string with length (handles embedded NULs)
+		var strLen C.size_t
+		cstr := C.lua_tolstring_wrapper(L, idx, &strLen)
+		if cstr != nil {
+			buf.Write(C.GoBytes(unsafe.Pointer(cstr), C.int(strLen)))
 		}
-		if C.lua_isstring(L, i) != 0 {
-			str := C.GoString(C.lua_tostring_wrapper(L, i))
-			writer.Write([]byte(str))
+
+	case C.LUA_TNUMBER:
+		num := float64(C.lua_tonumber(L, idx))
+		buf.WriteString(formatLuaNumber(num))
+
+	case C.LUA_TBOOLEAN:
+		if C.lua_toboolean(L, idx) != 0 {
+			buf.WriteString("true")
 		} else {
-			// For non-strings, convert to string using Lua's tostring
-			cToString := C.CString("tostring")
-			C.lua_getglobal_wrapper(L, cToString)
-			C.free(unsafe.Pointer(cToString))
-			C.lua_pushvalue(L, i)
-			if C.lua_pcall(L, 1, 1, 0) == 0 {
-				str := C.GoString(C.lua_tostring_wrapper(L, -1))
-				writer.Write([]byte(str))
-				C.lua_pop_wrapper(L, 1)
-			} else {
-				writer.Write([]byte("<error converting to string>"))
-				C.lua_pop_wrapper(L, 1)
-			}
+			buf.WriteString("false")
+		}
+
+	case C.LUA_TNIL:
+		buf.WriteString("nil")
+
+	case C.LUA_TLIGHTUSERDATA:
+		// Check if it's NULL (golapis.null)
+		ptr := C.lua_touserdata_wrapper(L, idx)
+		if ptr == nil {
+			buf.WriteString("null")
+		} else {
+			return errors.New(badArgError(argNum, funcName, "lightuserdata"))
+		}
+
+	case C.LUA_TTABLE:
+		return coerceTableToBytes(L, idx, buf, depth, argNum, funcName)
+
+	case C.LUA_TFUNCTION:
+		return errors.New(badArgError(argNum, funcName, "function"))
+
+	case C.LUA_TUSERDATA:
+		return errors.New(badArgError(argNum, funcName, "userdata"))
+
+	case C.LUA_TTHREAD:
+		return errors.New(badArgError(argNum, funcName, "thread"))
+
+	default:
+		typeName := C.GoString(C.lua_typename(L, luaType))
+		return errors.New(badArgError(argNum, funcName, typeName))
+	}
+
+	return nil
+}
+
+// golapisOutput is the shared implementation for say/print
+func golapisOutput(L *C.lua_State, appendNewline bool, funcName string) C.int {
+	writer := getOutputWriter(L)
+	if writer == nil {
+		// No output context - return success anyway (matches nginx-lua behavior)
+		C.lua_pushinteger(L, 1)
+		return 1
+	}
+
+	// Use bytes.Buffer for accumulation
+	buf := &bytes.Buffer{}
+
+	// Process each argument
+	nargs := int(C.lua_gettop(L))
+	for i := 1; i <= nargs; i++ {
+		err := coerceValueToBytes(L, C.int(i), buf, 0, i, funcName)
+		if err != nil {
+			C.lua_pushnil(L)
+			pushCString(L, err.Error())
+			return 2
 		}
 	}
-	writer.Write([]byte("\n"))
-	return 0
+
+	// Append newline if say()
+	if appendNewline {
+		buf.WriteByte('\n')
+	}
+
+	// Write to output
+	data := buf.Bytes()
+	for len(data) > 0 {
+		n, writeErr := writer.Write(data)
+		if writeErr != nil {
+			C.lua_pushnil(L)
+			pushCString(L, "nginx output filter error")
+			return 2
+		}
+		if n <= 0 {
+			C.lua_pushnil(L)
+			pushCString(L, "nginx output filter error")
+			return 2
+		}
+		data = data[n:]
+	}
+
+	// Return 1 on success
+	C.lua_pushinteger(L, 1)
+	return 1
+}
+
+//export golapis_print
+func golapis_print(L *C.lua_State) C.int {
+	return golapisOutput(L, false, "print") // no newline
+}
+
+//export golapis_say
+func golapis_say(L *C.lua_State) C.int {
+	return golapisOutput(L, true, "say") // append newline
 }
 
 //export golapis_timer_at
