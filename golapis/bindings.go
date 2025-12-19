@@ -63,43 +63,54 @@ func golapis_http_request(L *C.lua_State) C.int {
 		return 2
 	}
 
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushCString(L, "http.request argument must be a string")
+		return 2
+	}
+
 	url_str := C.GoString(C.lua_tostring_wrapper(L, 1))
 
-	resp, err := http.Get(url_str)
-	if err != nil {
+	// Get the current thread for async resumption
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
 		C.lua_pushnil(L)
-		pushCString(L, err.Error())
-		return 2
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		C.lua_pushnil(L)
-		pushCString(L, err.Error())
+		pushCString(L, "http.request: could not find thread context")
 		return 2
 	}
 
-	// body
-	pushCString(L, string(body))
+	// Start async HTTP request
+	go func() {
+		resp, err := http.Get(url_str)
 
-	// status code
-	C.lua_pushinteger(L, C.lua_Integer(resp.StatusCode))
+		var returnVals []interface{}
 
-	// headers
-	C.lua_newtable_wrapper(L)
-	for key, values := range resp.Header {
-		pushCString(L, key)
-		C.lua_newtable_wrapper(L)
-		for i, value := range values {
-			C.lua_pushinteger(L, C.lua_Integer(i+1))
-			pushCString(L, value)
-			C.lua_settable(L, -3)
+		if err != nil {
+			returnVals = []interface{}{nil, err.Error()}
+		} else {
+			body, readErr := ioutil.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			if readErr != nil {
+				returnVals = []interface{}{nil, readErr.Error()}
+			} else {
+				returnVals = []interface{}{
+					string(body),
+					resp.StatusCode,
+					resp.Header,
+				}
+			}
 		}
-		C.lua_settable(L, -3)
-	}
 
-	return 3
+		thread.state.eventChan <- &StateEvent{
+			Type:       EventResumeThread,
+			Thread:     thread,
+			ReturnVals: returnVals,
+			Response:   nil,
+		}
+	}()
+
+	return C.lua_yield_wrapper(L, 0)
 }
 
 //export golapis_sleep

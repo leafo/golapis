@@ -160,6 +160,25 @@ func (t *LuaThread) resumeWithValues(values []interface{}) error {
 			}
 		case nil:
 			C.lua_pushnil(t.co)
+		case map[string][]string:
+			// Push as nested Lua table (for HTTP headers)
+			C.lua_newtable_wrapper(t.co)
+			for key, headerValues := range val {
+				ckey := C.CString(key)
+				C.lua_pushstring(t.co, ckey)
+				C.free(unsafe.Pointer(ckey))
+
+				// Create array of values for this header
+				C.lua_newtable_wrapper(t.co)
+				for i, hv := range headerValues {
+					C.lua_pushinteger(t.co, C.lua_Integer(i+1))
+					cv := C.CString(hv)
+					C.lua_pushstring(t.co, cv)
+					C.free(unsafe.Pointer(cv))
+					C.lua_settable(t.co, -3)
+				}
+				C.lua_settable(t.co, -3)
+			}
 		default:
 			C.lua_pushnil(t.co) // unsupported type, push nil
 		}
