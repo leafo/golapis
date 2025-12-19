@@ -40,7 +40,7 @@ func runSingleExecution(filename string) {
 	defer lua.Stop()
 
 	if err := lua.RunFile(filename); err != nil {
-		fmt.Printf("Error executing Lua file: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 

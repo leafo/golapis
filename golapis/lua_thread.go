@@ -173,12 +173,21 @@ func (t *LuaThread) resume(values []interface{}) error {
 		return nil
 	default:
 		t.status = ThreadDead
-		errMsg := C.GoString(C.lua_tostring_wrapper(t.co, -1))
+		traceback := t.getTraceback()
 		if debugEnabled {
-			debugLog("thread.resume: co=%p error: %s", t.co, errMsg)
+			debugLog("thread.resume: co=%p error: %s", t.co, traceback)
 		}
-		return errors.New(errMsg)
+		return errors.New(traceback)
 	}
+}
+
+// getTraceback calls debug.traceback(co, msg, 0) to get a full stack trace
+func (t *LuaThread) getTraceback() string {
+	L := t.state.luaState
+	C.lua_push_traceback(L, t.co)
+	traceback := C.GoString(C.lua_tostring_wrapper(L, -1))
+	C.lua_pop_wrapper(L, 1)
+	return traceback
 }
 
 // close cleans up the thread resources (internal)

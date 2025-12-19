@@ -50,7 +50,7 @@ func StartHTTPServer(filename, port string) {
 		result := <-resp
 
 		if result.Error != nil {
-			http.Error(w, fmt.Sprintf("Error executing Lua code: %v", result.Error), http.StatusInternalServerError)
+			http.Error(w, result.Error.Error(), http.StatusInternalServerError)
 			logHTTPRequest(r, http.StatusInternalServerError, 0, time.Since(start))
 			return
 		}

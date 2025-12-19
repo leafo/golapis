@@ -65,4 +65,32 @@ static void* lua_touserdata_wrapper(lua_State *L, int idx) {
     return lua_touserdata(L, idx);
 }
 
+// Get traceback from a coroutine error
+// L is the main state, co is the coroutine with error message on top of stack
+// Pushes traceback string onto L's stack (caller must pop)
+static void lua_push_traceback(lua_State *L, lua_State *co) {
+    const char *msg = lua_tostring(co, -1);
+    lua_getglobal(L, "debug");
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushstring(L, msg ? msg : "");
+        return;
+    }
+    lua_getfield(L, -1, "traceback");
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 2);
+        lua_pushstring(L, msg ? msg : "");
+        return;
+    }
+    lua_pushthread(co);
+    lua_xmove(co, L, 1);        // move coroutine to main state
+    lua_pushstring(L, msg);
+    lua_pushinteger(L, 0);      // level
+    if (lua_pcall(L, 3, 1, 0) != LUA_OK) {
+        lua_pop(L, 1);
+        lua_pushstring(L, msg ? msg : "");
+    }
+    lua_remove(L, -2);          // remove debug table, keep traceback
+}
+
 #endif
