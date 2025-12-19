@@ -11,6 +11,7 @@ extern int golapis_req_get_uri_args(lua_State *L);
 extern int golapis_timer_at(lua_State *L);
 extern int golapis_debug_cancel_timers(lua_State *L);
 extern int golapis_debug_pending_timer_count(lua_State *L);
+extern int golapis_var_index(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -38,6 +39,10 @@ static int c_debug_cancel_timers_wrapper(lua_State *L) {
 
 static int c_debug_pending_timer_count_wrapper(lua_State *L) {
     return golapis_debug_pending_timer_count(L);
+}
+
+static int c_var_index_wrapper(lua_State *L) {
+    return golapis_var_index(L);
 }
 
 static int setup_golapis_global(lua_State *L) {
@@ -78,6 +83,14 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "pending_timer_count");
     lua_setfield(L, -2, "debug");       // Add debug table to `golapis`
 
+    // Create var proxy table with __index metatable
+    lua_newtable(L);                    // Create empty 'var' table
+    lua_newtable(L);                    // Create metatable
+    lua_pushcfunction(L, c_var_index_wrapper);
+    lua_setfield(L, -2, "__index");     // metatable.__index = handler
+    lua_setmetatable(L, -2);            // setmetatable(var, metatable)
+    lua_setfield(L, -2, "var");         // golapis.var = var
+
     lua_pushvalue(L, -1);               // Duplicate table for registry ref
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
@@ -90,7 +103,9 @@ import "C"
 import (
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 	"unsafe"
 )
@@ -452,4 +467,117 @@ func pushCString(L *C.lua_State, s string) {
 	cstr := C.CString(s)
 	C.lua_pushstring(L, cstr)
 	C.free(unsafe.Pointer(cstr))
+}
+
+//export golapis_var_index
+func golapis_var_index(L *C.lua_State) C.int {
+	// Stack: [var_table, key]
+	// When __index metamethod is called with a function, Lua passes:
+	//   arg 1: the table being indexed
+	//   arg 2: the key
+
+	if C.lua_isstring(L, 2) == 0 {
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	key := C.GoString(C.lua_tostring_wrapper(L, 2))
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.httpRequest == nil {
+		errMsg := C.CString("golapis.var can only be used in HTTP request context")
+		defer C.free(unsafe.Pointer(errMsg))
+		C.luaL_error_wrapper(L, errMsg)
+		return 0
+	}
+
+	value := resolveVar(thread.httpRequest, key)
+	if value == nil {
+		C.lua_pushnil(L)
+	} else {
+		pushCString(L, *value)
+	}
+	return 1
+}
+
+// resolveVar resolves an nginx-style variable name to its value from the HTTP request.
+// Returns nil if the variable is not set or not applicable.
+func resolveVar(req *http.Request, key string) *string {
+	var result string
+
+	switch key {
+	case "request_method":
+		result = req.Method
+
+	case "request_uri":
+		result = req.URL.RequestURI()
+
+	case "scheme":
+		if req.TLS != nil {
+			result = "https"
+		} else {
+			result = "http"
+		}
+
+	case "server_port":
+		_, port, err := net.SplitHostPort(req.Host)
+		if err != nil {
+			if req.TLS != nil {
+				result = "443"
+			} else {
+				result = "80"
+			}
+		} else {
+			result = port
+		}
+
+	case "server_addr":
+		// Server address requires additional plumbing from http.Server
+		return nil
+
+	case "remote_addr":
+		host, _, err := net.SplitHostPort(req.RemoteAddr)
+		if err != nil {
+			result = req.RemoteAddr
+		} else {
+			result = host
+		}
+
+	case "host":
+		host, _, err := net.SplitHostPort(req.Host)
+		if err != nil {
+			result = req.Host
+		} else {
+			result = host
+		}
+
+	case "args":
+		if req.URL.RawQuery == "" {
+			return nil
+		}
+		result = req.URL.RawQuery
+
+	default:
+		// Check for http_* pattern (header access)
+		if strings.HasPrefix(key, "http_") {
+			headerName := http.CanonicalHeaderKey(strings.ReplaceAll(key[5:], "_", "-"))
+			// Go's http.Request moves Host header to req.Host, not req.Header
+			if headerName == "Host" {
+				if req.Host == "" {
+					return nil
+				}
+				result = req.Host
+			} else {
+				headerValue := req.Header.Get(headerName)
+				if headerValue == "" {
+					return nil
+				}
+				result = headerValue
+			}
+		} else {
+			return nil
+		}
+	}
+
+	return &result
 }
