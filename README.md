@@ -100,3 +100,38 @@ golapis.print("Slept for 1 second")
 local body, status, headers = golapis.http.request("https://example.com")
 golapis.print("Status:", status)
 ```
+
+## ngx API Compatibility
+
+golapis implements a subset of the OpenResty/nginx-lua API:
+
+| golapis | ngx equivalent | Notes |
+|---------|----------------|-------|
+| `golapis.sleep(seconds)` | `ngx.sleep(seconds)` | Async sleep, yields coroutine |
+| `golapis.print(...)` | `ngx.print(...)` | Output to response/stdout |
+| `golapis.req.get_uri_args([max])` | `ngx.req.get_uri_args([max])` | Parse query string parameters |
+| `golapis.timer.at(delay, cb, ...)` | `ngx.timer.at(delay, cb, ...)` | Schedule callback after delay |
+| `golapis.var.*` | `ngx.var.*` | Request variables (read-only, HTTP mode only) |
+| `golapis.ctx` | `ngx.ctx` | Per-request Lua table for storing data |
+
+### golapis.var Variables
+
+| Variable | Description |
+|----------|-------------|
+| `request_method` | HTTP method (GET, POST, etc.) |
+| `request_uri` | Full request URI including query string |
+| `scheme` | "http" or "https" |
+| `host` | Hostname without port |
+| `server_port` | Server port number |
+| `remote_addr` | Client IP address |
+| `args` | Query string (nil if empty) |
+| `http_*` | Any HTTP header (e.g., `http_user_agent`, `http_host`) |
+
+## Extensions
+
+Additional golapis functions not part of the ngx API:
+
+| Function | Description |
+|----------|-------------|
+| `golapis.http.request(url)` | Simple async HTTP GET, returns `body, status, headers` |
+| `golapis.version` | Library version string |
