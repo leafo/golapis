@@ -41,6 +41,7 @@ static void pop_stack(lua_State *L, int n) {
 import "C"
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -455,7 +456,7 @@ func (gls *GolapisLuaState) loadString(code string) error {
 	if result != 0 {
 		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
 		C.pop_stack(gls.luaState, 1)
-		return fmt.Errorf("lua error: %s", errMsg)
+		return errors.New(errMsg)
 	}
 	return nil
 }
@@ -469,7 +470,7 @@ func (gls *GolapisLuaState) loadFile(filename string) error {
 	if result != 0 {
 		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
 		C.pop_stack(gls.luaState, 1)
-		return fmt.Errorf("lua error: %s", errMsg)
+		return errors.New(errMsg)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ package golapis
 */
 import "C"
 import (
+	"errors"
 	"fmt"
 	"io"
 	"unsafe"
@@ -176,7 +177,7 @@ func (t *LuaThread) resume(values []interface{}) error {
 		if debugEnabled {
 			debugLog("thread.resume: co=%p error: %s", t.co, errMsg)
 		}
-		return fmt.Errorf("lua error: %s", errMsg)
+		return errors.New(errMsg)
 	}
 }
 
