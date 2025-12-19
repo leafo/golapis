@@ -59,6 +59,7 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 
 	// Register thread in map so async ops can find it
 	luaThreadMap[co] = thread
+	gls.threadWg.Add(1)
 	if debugEnabled {
 		debugLog("newThread: created thread co=%p", co)
 	}
@@ -206,5 +207,6 @@ func (t *LuaThread) close() {
 			t.ctxRef = 0
 		}
 		t.co = nil
+		t.state.threadWg.Done()
 	}
 }

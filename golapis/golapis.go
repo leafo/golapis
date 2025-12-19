@@ -55,6 +55,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"unsafe"
 )
 
@@ -66,6 +67,7 @@ type GolapisLuaState struct {
 	outputWriter io.Writer
 	eventChan    chan *StateEvent // all operations go through this channel
 	running      bool             // is event loop running?
+	threadWg     sync.WaitGroup   // tracks active threads for Wait()
 }
 
 // StateEventType represents the type of event sent to the state's event loop
@@ -164,6 +166,11 @@ func (gls *GolapisLuaState) Stop() {
 		Response: resp,
 	}
 	<-resp
+}
+
+// Wait blocks until all active threads have completed execution
+func (gls *GolapisLuaState) Wait() {
+	gls.threadWg.Wait()
 }
 
 // RunFile sends a request to execute a Lua file
