@@ -2,6 +2,49 @@ package golapis
 
 /*
 #include "lua_helpers.h"
+
+// Forward declaration for Go functions
+extern int golapis_sleep(lua_State *L);
+extern int golapis_http_request(lua_State *L);
+extern int golapis_print(lua_State *L);
+
+static int c_sleep_wrapper(lua_State *L) {
+    return golapis_sleep(L);
+}
+
+static int c_http_request_wrapper(lua_State *L) {
+    return golapis_http_request(L);
+}
+
+static int c_print_wrapper(lua_State *L) {
+    return golapis_print(L);
+}
+
+static int setup_golapis_global(lua_State *L) {
+    lua_newtable(L);                    // Create new table `golapis`
+
+    lua_pushstring(L, "1.0.0");
+    lua_setfield(L, -2, "version");
+
+    lua_pushcfunction(L, c_sleep_wrapper);
+    lua_setfield(L, -2, "sleep");
+
+    lua_pushcfunction(L, c_print_wrapper);
+    lua_setfield(L, -2, "print");
+
+    // Create http table
+    lua_newtable(L);
+    lua_pushcfunction(L, c_http_request_wrapper);
+    lua_setfield(L, -2, "request");
+    lua_setfield(L, -2, "http");        // Add http table to `golapis`
+
+    lua_pushvalue(L, -1);               // Duplicate table for registry ref
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    lua_setglobal(L, "golapis");        // Set global golapis = table
+    return ref;
+}
+
 */
 import "C"
 import (
@@ -137,4 +180,9 @@ func (gls *GolapisLuaState) writeOutput(text string) {
 	} else {
 		gls.outputBuffer.WriteString(text)
 	}
+}
+
+// SetupGolapis initializes the golapis global table with exported functions
+func (gls *GolapisLuaState) SetupGolapis() {
+	gls.golapisRef = C.setup_golapis_global(gls.luaState)
 }
