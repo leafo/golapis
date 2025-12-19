@@ -50,10 +50,6 @@ static int lua_isfunction_wrapper(lua_State *L, int idx) {
     return lua_isfunction(L, idx);
 }
 
-static int luaL_error_wrapper(lua_State *L, const char *msg) {
-    return luaL_error(L, "%s", msg);
-}
-
 // For table iteration
 static int lua_next_wrapper(lua_State *L, int idx) {
     return lua_next(L, idx);

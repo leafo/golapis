@@ -49,15 +49,28 @@ static int c_debug_pending_timer_count_wrapper(lua_State *L) {
 }
 
 static int c_var_index_wrapper(lua_State *L) {
-    return golapis_var_index(L);
+    int result = golapis_var_index(L);
+    if (result < 0) {
+        // Error message is on stack - use luaL_error to add location info
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
 }
 
 static int c_header_index_wrapper(lua_State *L) {
-    return golapis_header_index(L);
+    int result = golapis_header_index(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
 }
 
 static int c_header_newindex_wrapper(lua_State *L) {
-    return golapis_header_newindex(L);
+    int result = golapis_header_newindex(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
 }
 
 static int setup_golapis_global(lua_State *L) {
@@ -699,8 +712,8 @@ func golapis_var_index(L *C.lua_State) C.int {
 	if thread == nil || thread.request == nil {
 		errMsg := C.CString("golapis.var can only be used in HTTP request context")
 		defer C.free(unsafe.Pointer(errMsg))
-		C.luaL_error_wrapper(L, errMsg)
-		return 0
+		C.lua_pushstring(L, errMsg)
+		return -1
 	}
 
 	value := resolveVar(thread.request.Request, key)
@@ -832,13 +845,15 @@ func golapis_header_newindex(L *C.lua_State) C.int {
 	//   arg 1: the table being indexed
 	//   arg 2: the key
 	//   arg 3: the value being assigned
+	//
+	// Returns -1 with error message on stack to signal error to C wrapper
 
 	// Validate key is a string
 	if C.lua_isstring(L, 2) == 0 {
 		errMsg := C.CString("header name must be a string")
 		defer C.free(unsafe.Pointer(errMsg))
-		C.luaL_error_wrapper(L, errMsg)
-		return 0
+		C.lua_pushstring(L, errMsg)
+		return -1
 	}
 
 	key := C.GoString(C.lua_tostring_wrapper(L, 2))
@@ -849,16 +864,16 @@ func golapis_header_newindex(L *C.lua_State) C.int {
 	if thread == nil || thread.request == nil {
 		errMsg := C.CString("golapis.header can only be used in HTTP request context")
 		defer C.free(unsafe.Pointer(errMsg))
-		C.luaL_error_wrapper(L, errMsg)
-		return 0
+		C.lua_pushstring(L, errMsg)
+		return -1
 	}
 
 	// Check if headers have already been sent
 	if thread.request.HeadersSent {
 		errMsg := C.CString(fmt.Sprintf("attempt to set header '%s' after headers have been sent", headerName))
 		defer C.free(unsafe.Pointer(errMsg))
-		C.luaL_error_wrapper(L, errMsg)
-		return 0
+		C.lua_pushstring(L, errMsg)
+		return -1
 	}
 
 	valueType := C.lua_type(L, 3)
@@ -892,8 +907,8 @@ func golapis_header_newindex(L *C.lua_State) C.int {
 			if err != nil {
 				errMsg := C.CString("header value table must be an array")
 				defer C.free(unsafe.Pointer(errMsg))
-				C.luaL_error_wrapper(L, errMsg)
-				return 0
+				C.lua_pushstring(L, errMsg)
+				return -1
 			}
 
 			// For single-value headers, only use the last value
@@ -923,8 +938,8 @@ func golapis_header_newindex(L *C.lua_State) C.int {
 		typeName := C.GoString(C.lua_typename(L, valueType))
 		errMsg := C.CString(fmt.Sprintf("header value must be a string, table, or nil (got %s)", typeName))
 		defer C.free(unsafe.Pointer(errMsg))
-		C.luaL_error_wrapper(L, errMsg)
-		return 0
+		C.lua_pushstring(L, errMsg)
+		return -1
 	}
 
 	return 0
@@ -951,8 +966,8 @@ func golapis_header_index(L *C.lua_State) C.int {
 	if thread == nil || thread.request == nil {
 		errMsg := C.CString("golapis.header can only be used in HTTP request context")
 		defer C.free(unsafe.Pointer(errMsg))
-		C.luaL_error_wrapper(L, errMsg)
-		return 0
+		C.lua_pushstring(L, errMsg)
+		return -1
 	}
 
 	values := thread.request.ResponseHeaders[headerName]
