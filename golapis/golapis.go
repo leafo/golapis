@@ -44,10 +44,6 @@ static int load_lua_file(lua_State *L, const char *filename) {
     return result;
 }
 
-static const char* get_error_string(lua_State *L) {
-    return lua_tostring(L, -1);
-}
-
 static void pop_stack(lua_State *L, int n) {
     lua_pop(L, n);
 }
@@ -318,7 +314,7 @@ func (gls *GolapisLuaState) runString(code string) error {
 
 	result := C.run_lua_string(gls.luaState, ccode)
 	if result != 0 {
-		errMsg := C.GoString(C.get_error_string(gls.luaState))
+		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
 		C.pop_stack(gls.luaState, 1)
 		return fmt.Errorf("lua error: %s", errMsg)
 	}
@@ -332,7 +328,7 @@ func (gls *GolapisLuaState) loadFile(filename string) error {
 
 	result := C.load_lua_file(gls.luaState, cfilename)
 	if result != 0 {
-		errMsg := C.GoString(C.get_error_string(gls.luaState))
+		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
 		C.pop_stack(gls.luaState, 1)
 		return fmt.Errorf("lua error: %s", errMsg)
 	}
