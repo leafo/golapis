@@ -30,6 +30,10 @@ func StartHTTPServer(filename, port string) {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
+		// Create request context and wrap the response writer
+		req := NewGolapisRequest(r)
+		wrappedWriter := req.WrapResponseWriter(w)
+
 		// Create response channel for this request
 		resp := make(chan *StateResponse, 1)
 
@@ -37,8 +41,8 @@ func StartHTTPServer(filename, port string) {
 		lua.eventChan <- &StateEvent{
 			Type:         EventRunFile,
 			Filename:     filename,
-			OutputWriter: w, // Each request gets its own writer
-			Request:      r, // Pass HTTP request for golapis.req.* functions
+			OutputWriter: wrappedWriter,
+			Request:      req,
 			Response:     resp,
 		}
 
@@ -50,6 +54,9 @@ func StartHTTPServer(filename, port string) {
 			logHTTPRequest(r, http.StatusInternalServerError, 0, time.Since(start))
 			return
 		}
+
+		// Apply response headers if not already sent (handles no-body case)
+		req.FlushHeaders(w)
 
 		logHTTPRequest(r, http.StatusOK, 0, time.Since(start))
 	})

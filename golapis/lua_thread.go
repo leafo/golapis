@@ -7,7 +7,6 @@ import "C"
 import (
 	"fmt"
 	"io"
-	"net/http"
 	"unsafe"
 )
 
@@ -36,7 +35,7 @@ type LuaThread struct {
 	ctxRef       C.int               // Lua registry reference to the context table
 	responseChan chan *StateResponse // channel to send final response when thread completes
 	outputWriter io.Writer           // per-request output destination (e.g., http.ResponseWriter)
-	httpRequest  *http.Request       // HTTP request for this thread (nil in CLI mode)
+	request      *GolapisRequest     // Request context (nil in CLI mode)
 }
 
 // newThread creates a new LuaThread from the function currently on top of the stack (internal)

@@ -13,6 +13,8 @@ extern int golapis_timer_at(lua_State *L);
 extern int golapis_debug_cancel_timers(lua_State *L);
 extern int golapis_debug_pending_timer_count(lua_State *L);
 extern int golapis_var_index(lua_State *L);
+extern int golapis_header_index(lua_State *L);
+extern int golapis_header_newindex(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -48,6 +50,14 @@ static int c_debug_pending_timer_count_wrapper(lua_State *L) {
 
 static int c_var_index_wrapper(lua_State *L) {
     return golapis_var_index(L);
+}
+
+static int c_header_index_wrapper(lua_State *L) {
+    return golapis_header_index(L);
+}
+
+static int c_header_newindex_wrapper(lua_State *L) {
+    return golapis_header_newindex(L);
 }
 
 static int setup_golapis_global(lua_State *L) {
@@ -102,6 +112,16 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "__index");     // metatable.__index = handler
     lua_setmetatable(L, -2);            // setmetatable(var, metatable)
     lua_setfield(L, -2, "var");         // golapis.var = var
+
+    // Create header proxy table with __index and __newindex metamethods
+    lua_newtable(L);                    // Create empty 'header' table
+    lua_newtable(L);                    // Create metatable
+    lua_pushcfunction(L, c_header_index_wrapper);
+    lua_setfield(L, -2, "__index");     // metatable.__index = read handler
+    lua_pushcfunction(L, c_header_newindex_wrapper);
+    lua_setfield(L, -2, "__newindex");  // metatable.__newindex = write handler
+    lua_setmetatable(L, -2);            // setmetatable(header, metatable)
+    lua_setfield(L, -2, "header");      // golapis.header = header
 
     lua_pushvalue(L, -1);               // Duplicate table for registry ref
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -569,14 +589,14 @@ func golapis_req_get_uri_args(L *C.lua_State) C.int {
 
 	// Get current thread's HTTP request
 	thread := getLuaThreadFromRegistry(L)
-	if thread == nil || thread.httpRequest == nil {
+	if thread == nil || thread.request == nil {
 		// Not in HTTP context - return nil (nginx-lua compatible behavior)
 		C.lua_pushnil(L)
 		return 1
 	}
 
 	// Parse query parameters with nginx-lua compatible behavior
-	queryArgs := parseQueryString(thread.httpRequest.URL.RawQuery)
+	queryArgs := parseQueryString(thread.request.Request.URL.RawQuery)
 
 	// Create result table
 	C.lua_newtable_wrapper(L)
@@ -676,14 +696,14 @@ func golapis_var_index(L *C.lua_State) C.int {
 	key := C.GoString(C.lua_tostring_wrapper(L, 2))
 
 	thread := getLuaThreadFromRegistry(L)
-	if thread == nil || thread.httpRequest == nil {
+	if thread == nil || thread.request == nil {
 		errMsg := C.CString("golapis.var can only be used in HTTP request context")
 		defer C.free(unsafe.Pointer(errMsg))
 		C.luaL_error_wrapper(L, errMsg)
 		return 0
 	}
 
-	value := resolveVar(thread.httpRequest, key)
+	value := resolveVar(thread.request.Request, key)
 	if value == nil {
 		C.lua_pushnil(L)
 	} else {
@@ -772,4 +792,187 @@ func resolveVar(req *http.Request, key string) *string {
 	}
 
 	return &result
+}
+
+// normalizeHeaderName converts underscore to hyphen and canonicalizes the header name.
+// This matches ngx.header behavior where content_type becomes Content-Type.
+func normalizeHeaderName(key string) string {
+	return http.CanonicalHeaderKey(strings.ReplaceAll(key, "_", "-"))
+}
+
+// singleValueHeaders lists headers that should only have a single value.
+// When setting these headers with a table, only the last value is used.
+var singleValueHeaders = map[string]bool{
+	"Content-Type":              true,
+	"Content-Length":            true,
+	"Content-Encoding":          true,
+	"Content-Language":          true,
+	"Content-Location":          true,
+	"Content-Md5":               true,
+	"Content-Range":             true,
+	"Location":                  true,
+	"Last-Modified":             true,
+	"Etag":                      true,
+	"Accept-Ranges":             true,
+	"Age":                       true,
+	"Server":                    true,
+	"Retry-After":               true,
+	"Www-Authenticate":          true,
+	"Proxy-Authenticate":        true,
+	"Transfer-Encoding":         true,
+	"Content-Disposition":       true,
+	"Access-Control-Max-Age":    true,
+	"Access-Control-Allow-Origin": true,
+}
+
+//export golapis_header_newindex
+func golapis_header_newindex(L *C.lua_State) C.int {
+	// Stack: [header_table, key, value]
+	// When __newindex metamethod is called, Lua passes:
+	//   arg 1: the table being indexed
+	//   arg 2: the key
+	//   arg 3: the value being assigned
+
+	// Validate key is a string
+	if C.lua_isstring(L, 2) == 0 {
+		errMsg := C.CString("header name must be a string")
+		defer C.free(unsafe.Pointer(errMsg))
+		C.luaL_error_wrapper(L, errMsg)
+		return 0
+	}
+
+	key := C.GoString(C.lua_tostring_wrapper(L, 2))
+	headerName := normalizeHeaderName(key)
+
+	// Get thread context
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		errMsg := C.CString("golapis.header can only be used in HTTP request context")
+		defer C.free(unsafe.Pointer(errMsg))
+		C.luaL_error_wrapper(L, errMsg)
+		return 0
+	}
+
+	// Check if headers have already been sent
+	if thread.request.HeadersSent {
+		errMsg := C.CString(fmt.Sprintf("attempt to set header '%s' after headers have been sent", headerName))
+		defer C.free(unsafe.Pointer(errMsg))
+		C.luaL_error_wrapper(L, errMsg)
+		return 0
+	}
+
+	valueType := C.lua_type(L, 3)
+
+	switch valueType {
+	case C.LUA_TNIL:
+		// nil clears the header
+		thread.request.ResponseHeaders.Del(headerName)
+
+	case C.LUA_TSTRING:
+		// Single string value
+		value := C.GoString(C.lua_tostring_wrapper(L, 3))
+		thread.request.ResponseHeaders.Set(headerName, value)
+
+	case C.LUA_TTABLE:
+		// Table value - can be multiple values or empty (to clear)
+		// First, check if it's empty
+		C.lua_pushnil(L)
+		if C.lua_next_wrapper(L, 3) == 0 {
+			// Empty table - clear the header
+			thread.request.ResponseHeaders.Del(headerName)
+		} else {
+			// Non-empty table - pop the key/value we just pushed
+			C.lua_pop_wrapper(L, 2)
+
+			// Clear existing values
+			thread.request.ResponseHeaders.Del(headerName)
+
+			// Get max key to iterate properly
+			maxKey, err := validateArrayTable(L, 3)
+			if err != nil {
+				errMsg := C.CString("header value table must be an array")
+				defer C.free(unsafe.Pointer(errMsg))
+				C.luaL_error_wrapper(L, errMsg)
+				return 0
+			}
+
+			// For single-value headers, only use the last value
+			if singleValueHeaders[headerName] {
+				// Get the last value
+				C.lua_rawgeti_wrapper(L, 3, C.int(maxKey))
+				if C.lua_isstring(L, -1) != 0 {
+					value := C.GoString(C.lua_tostring_wrapper(L, -1))
+					thread.request.ResponseHeaders.Set(headerName, value)
+				}
+				C.lua_pop_wrapper(L, 1)
+			} else {
+				// Multi-value header - add all values
+				for i := 1; i <= maxKey; i++ {
+					C.lua_rawgeti_wrapper(L, 3, C.int(i))
+					if C.lua_isstring(L, -1) != 0 {
+						value := C.GoString(C.lua_tostring_wrapper(L, -1))
+						thread.request.ResponseHeaders.Add(headerName, value)
+					}
+					C.lua_pop_wrapper(L, 1)
+				}
+			}
+		}
+
+	default:
+		// Convert other types to string
+		typeName := C.GoString(C.lua_typename(L, valueType))
+		errMsg := C.CString(fmt.Sprintf("header value must be a string, table, or nil (got %s)", typeName))
+		defer C.free(unsafe.Pointer(errMsg))
+		C.luaL_error_wrapper(L, errMsg)
+		return 0
+	}
+
+	return 0
+}
+
+//export golapis_header_index
+func golapis_header_index(L *C.lua_State) C.int {
+	// Stack: [header_table, key]
+	// When __index metamethod is called, Lua passes:
+	//   arg 1: the table being indexed
+	//   arg 2: the key
+
+	// Validate key is a string
+	if C.lua_isstring(L, 2) == 0 {
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	key := C.GoString(C.lua_tostring_wrapper(L, 2))
+	headerName := normalizeHeaderName(key)
+
+	// Get thread context
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		errMsg := C.CString("golapis.header can only be used in HTTP request context")
+		defer C.free(unsafe.Pointer(errMsg))
+		C.luaL_error_wrapper(L, errMsg)
+		return 0
+	}
+
+	values := thread.request.ResponseHeaders[headerName]
+	if len(values) == 0 {
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	if len(values) == 1 {
+		// Single value - return as string
+		pushCString(L, values[0])
+		return 1
+	}
+
+	// Multiple values - return as table
+	C.lua_newtable_wrapper(L)
+	for i, v := range values {
+		C.lua_pushinteger(L, C.lua_Integer(i+1))
+		pushCString(L, v)
+		C.lua_settable(L, -3)
+	}
+	return 1
 }

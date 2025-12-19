@@ -43,7 +43,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -105,7 +104,7 @@ type StateEvent struct {
 	Filename     string
 	Code         string
 	OutputWriter io.Writer     // output destination for this request (e.g., http.ResponseWriter)
-	Request      *http.Request // HTTP request for this event (nil in CLI mode)
+	Request      *GolapisRequest // Request context for this event (nil in CLI mode)
 
 	// For ResumeThread (async completion)
 	Thread     *LuaThread
@@ -123,6 +122,7 @@ type StateEvent struct {
 type StateResponse struct {
 	Error  error
 	Output string
+	Thread *LuaThread // The completed thread (for accessing request context, headers, etc.)
 }
 
 // NewGolapisLuaState creates a new Lua state and initializes it with golapis functions
@@ -276,10 +276,10 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 		return &StateResponse{Error: err}
 	}
 
-	// Store the response channel, output writer, and HTTP request on the thread
+	// Store the response channel, output writer, and request context on the thread
 	thread.responseChan = event.Response
 	thread.outputWriter = event.OutputWriter
-	thread.httpRequest = event.Request
+	thread.request = event.Request
 
 	if err := thread.resume(nil); err != nil {
 		thread.close()
@@ -289,7 +289,7 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 	// If thread is dead, clean up and respond immediately
 	if thread.status == ThreadDead {
 		thread.close()
-		return &StateResponse{}
+		return &StateResponse{Thread: thread}
 	}
 
 	// Thread yielded - don't respond yet, response will be sent when thread completes
@@ -308,10 +308,10 @@ func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
 		return &StateResponse{Error: err}
 	}
 
-	// Store the response channel, output writer, and HTTP request on the thread
+	// Store the response channel, output writer, and request context on the thread
 	thread.responseChan = event.Response
 	thread.outputWriter = event.OutputWriter
-	thread.httpRequest = event.Request
+	thread.request = event.Request
 
 	if err := thread.resume(nil); err != nil {
 		thread.close()
@@ -321,7 +321,7 @@ func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
 	// If thread is dead, clean up and respond immediately
 	if thread.status == ThreadDead {
 		thread.close()
-		return &StateResponse{}
+		return &StateResponse{Thread: thread}
 	}
 
 	// Thread yielded - don't respond yet, response will be sent when thread completes
@@ -346,7 +346,7 @@ func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse
 	if thread.status == ThreadDead {
 		// Thread completed - send success to the original caller
 		if thread.responseChan != nil {
-			thread.responseChan <- &StateResponse{}
+			thread.responseChan <- &StateResponse{Thread: thread}
 		}
 		thread.close()
 	}
