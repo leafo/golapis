@@ -64,13 +64,11 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 // setCtx assigns the thread's context table to golapis.ctx
 func (t *LuaThread) setCtx() {
 	L := t.state.luaState
-	cGolapis := C.CString("golapis")
-	defer C.free(unsafe.Pointer(cGolapis))
 	cCtx := C.CString("ctx")
 	defer C.free(unsafe.Pointer(cCtx))
 
-	C.lua_getglobal_wrapper(L, cGolapis)
-	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, C.int(t.ctxRef))
+	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, t.state.golapisRef)
+	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, t.ctxRef)
 	C.lua_setfield_wrapper(L, -2, cCtx)
 	C.lua_pop_wrapper(L, 1) // pop golapis table
 }
@@ -78,12 +76,10 @@ func (t *LuaThread) setCtx() {
 // clearCtx sets golapis.ctx to nil
 func (t *LuaThread) clearCtx() {
 	L := t.state.luaState
-	cGolapis := C.CString("golapis")
-	defer C.free(unsafe.Pointer(cGolapis))
 	cCtx := C.CString("ctx")
 	defer C.free(unsafe.Pointer(cCtx))
 
-	C.lua_getglobal_wrapper(L, cGolapis)
+	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, t.state.golapisRef)
 	C.lua_pushnil(L)
 	C.lua_setfield_wrapper(L, -2, cCtx)
 	C.lua_pop_wrapper(L, 1) // pop golapis table

@@ -99,6 +99,7 @@ import (
 // GolapisLuaState represents a Lua state with golapis functions initialized
 type GolapisLuaState struct {
 	luaState     *C.lua_State
+	golapisRef   C.int // registry reference to golapis table
 	outputBuffer *bytes.Buffer
 	outputWriter io.Writer
 	eventChan    chan *StateEvent // all operations go through this channel
@@ -157,6 +158,11 @@ func NewGolapisLuaState() *GolapisLuaState {
 // Close closes the Lua state and frees its resources
 func (gls *GolapisLuaState) Close() {
 	if gls.luaState != nil {
+		// Release the golapis table reference
+		if gls.golapisRef != 0 {
+			C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.golapisRef)
+			gls.golapisRef = 0
+		}
 		gls.unregisterState()
 		C.lua_close(gls.luaState)
 		gls.luaState = nil
@@ -166,6 +172,12 @@ func (gls *GolapisLuaState) Close() {
 // SetupGolapis initializes the golapis global table with exported functions
 func (gls *GolapisLuaState) SetupGolapis() {
 	C.setup_golapis_global(gls.luaState)
+
+	// Store a registry reference to the golapis table for fast access
+	cGolapis := C.CString("golapis")
+	defer C.free(unsafe.Pointer(cGolapis))
+	C.lua_getglobal_wrapper(gls.luaState, cGolapis)
+	gls.golapisRef = C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
 }
 
 // SetOutputWriter sets the output writer for golapis.print function
