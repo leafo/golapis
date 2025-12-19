@@ -4,33 +4,48 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
 // StartHTTPServer starts an HTTP server that executes the given Lua script for each request
+// Uses a single shared GolapisLuaState for all requests with cooperative scheduling
 func StartHTTPServer(filename, port string) {
 	fmt.Printf("Starting HTTP server on port %s with script: %s\n", port, filename)
+
+	// Create single shared Lua state at server startup
+	lua := NewGolapisLuaState()
+	if lua == nil {
+		log.Fatal("Failed to create Lua state")
+	}
+
+	// Start the event loop (runs for lifetime of server)
+	lua.Start()
+
+	// Setup graceful shutdown
+	setupGracefulShutdown(lua)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		lua := NewGolapisLuaState()
-		if lua == nil {
-			http.Error(w, "Failed to create Lua state", http.StatusInternalServerError)
-			logHTTPRequest(r, http.StatusInternalServerError, 0, time.Since(start))
-			return
+		// Create response channel for this request
+		resp := make(chan *StateResponse, 1)
+
+		// Send request to shared Lua state's event loop
+		lua.eventChan <- &StateEvent{
+			Type:         EventRunFile,
+			Filename:     filename,
+			OutputWriter: w, // Each request gets its own writer
+			Response:     resp,
 		}
-		defer lua.Close()
 
-		lua.Start()
-		defer lua.Stop()
+		// Wait for request completion
+		result := <-resp
 
-		// Set up output writer to send response to HTTP client
-		lua.SetOutputWriter(w)
-
-		// Execute the Lua file
-		if err := lua.RunFile(filename); err != nil {
-			http.Error(w, fmt.Sprintf("Error executing Lua code: %v", err), http.StatusInternalServerError)
+		if result.Error != nil {
+			http.Error(w, fmt.Sprintf("Error executing Lua code: %v", result.Error), http.StatusInternalServerError)
 			logHTTPRequest(r, http.StatusInternalServerError, 0, time.Since(start))
 			return
 		}
@@ -39,6 +54,20 @@ func StartHTTPServer(filename, port string) {
 	})
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
+// setupGracefulShutdown sets up signal handling for graceful shutdown
+func setupGracefulShutdown(lua *GolapisLuaState) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-c
+		fmt.Println("\nShutting down gracefully...")
+		lua.Stop()
+		lua.Close()
+		os.Exit(0)
+	}()
 }
 
 // logHTTPRequest logs HTTP requests in nginx "combined" log format

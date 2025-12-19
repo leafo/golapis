@@ -6,6 +6,7 @@ package golapis
 import "C"
 import (
 	"fmt"
+	"io"
 	"unsafe"
 )
 
@@ -26,6 +27,7 @@ type LuaThread struct {
 	status       ThreadStatus
 	ctxRef       C.int               // Lua registry reference to the context table
 	responseChan chan *StateResponse // channel to send final response when thread completes
+	outputWriter io.Writer           // per-request output destination (e.g., http.ResponseWriter)
 }
 
 // newThread creates a new LuaThread from the function currently on top of the stack (internal)

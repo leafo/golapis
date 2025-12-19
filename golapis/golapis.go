@@ -83,8 +83,9 @@ type StateEvent struct {
 	Type StateEventType
 
 	// For RunFile/RunString
-	Filename string
-	Code     string
+	Filename     string
+	Code         string
+	OutputWriter io.Writer // output destination for this request (e.g., http.ResponseWriter)
 
 	// For ResumeThread (async completion)
 	Thread     *LuaThread
@@ -217,8 +218,9 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 		return &StateResponse{Error: err}
 	}
 
-	// Store the response channel on the thread for later
+	// Store the response channel and output writer on the thread
 	thread.responseChan = event.Response
+	thread.outputWriter = event.OutputWriter
 
 	if err := thread.resume(); err != nil {
 		thread.close()

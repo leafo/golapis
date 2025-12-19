@@ -48,6 +48,7 @@ static int setup_golapis_global(lua_State *L) {
 */
 import "C"
 import (
+	"io"
 	"io/ioutil"
 	"net/http"
 	"time"
@@ -142,20 +143,31 @@ func golapis_sleep(L *C.lua_State) C.int {
 
 //export golapis_print
 func golapis_print(L *C.lua_State) C.int {
-	// Get the GolapisLuaState instance from the registry
-	gls := getLuaStateFromRegistry(L)
-	if gls == nil {
+	// Get writer from thread (preferred) or fall back to state's writer
+	var writer io.Writer
+	thread := getLuaThreadFromRegistry(L)
+	if thread != nil && thread.outputWriter != nil {
+		writer = thread.outputWriter
+	} else {
+		// Fallback for CLI mode or non-thread context
+		gls := getLuaStateFromRegistry(L)
+		if gls != nil {
+			writer = gls.outputWriter
+		}
+	}
+
+	if writer == nil {
 		return 0
 	}
 
 	nargs := C.lua_gettop(L)
 	for i := C.int(1); i <= nargs; i++ {
 		if i > 1 {
-			gls.writeOutput("\t")
+			writer.Write([]byte("\t"))
 		}
 		if C.lua_isstring(L, i) != 0 {
 			str := C.GoString(C.lua_tostring_wrapper(L, i))
-			gls.writeOutput(str)
+			writer.Write([]byte(str))
 		} else {
 			// For non-strings, convert to string using Lua's tostring
 			cToString := C.CString("tostring")
@@ -164,15 +176,15 @@ func golapis_print(L *C.lua_State) C.int {
 			C.lua_pushvalue(L, i)
 			if C.lua_pcall(L, 1, 1, 0) == 0 {
 				str := C.GoString(C.lua_tostring_wrapper(L, -1))
-				gls.writeOutput(str)
+				writer.Write([]byte(str))
 				C.lua_pop_wrapper(L, 1)
 			} else {
-				gls.writeOutput("<error converting to string>")
+				writer.Write([]byte("<error converting to string>"))
 				C.lua_pop_wrapper(L, 1)
 			}
 		}
 	}
-	gls.writeOutput("\n")
+	writer.Write([]byte("\n"))
 	return 0
 }
 
