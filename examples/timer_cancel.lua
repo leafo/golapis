@@ -13,29 +13,29 @@
 
 local function callback(premature, name)
     if premature then
-        golapis.print("[" .. name .. "] Timer cancelled prematurely!")
+        golapis.say("[" .. name .. "] Timer cancelled prematurely!")
     else
-        golapis.print("[" .. name .. "] Timer fired normally")
+        golapis.say("[" .. name .. "] Timer fired normally")
     end
 end
 
-golapis.print("Pending timers: " .. golapis.debug.pending_timer_count())
+golapis.say("Pending timers: " .. golapis.debug.pending_timer_count())
 
-golapis.print("Scheduling timers...")
+golapis.say("Scheduling timers...")
 
 golapis.timer.at(0.5, callback, "500ms")
 golapis.timer.at(2, callback, "2s")
 golapis.timer.at(10, callback, "10s")
 
-golapis.print("Pending timers: " .. golapis.debug.pending_timer_count())
-golapis.print("Sleeping for 1 second to let 500ms timer fire naturally...")
+golapis.say("Pending timers: " .. golapis.debug.pending_timer_count())
+golapis.say("Sleeping for 1 second to let 500ms timer fire naturally...")
 
 golapis.sleep(1)
 
-golapis.print("Pending timers: " .. golapis.debug.pending_timer_count())
-golapis.print("Cancelling remaining timers...")
+golapis.say("Pending timers: " .. golapis.debug.pending_timer_count())
+golapis.say("Cancelling remaining timers...")
 golapis.debug.cancel_timers()
 golapis.debug.cancel_timers()
 
-golapis.print("Pending timers: " .. golapis.debug.pending_timer_count())
-golapis.print("Done!")
+golapis.say("Pending timers: " .. golapis.debug.pending_timer_count())
+golapis.say("Done!")

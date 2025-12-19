@@ -9,37 +9,37 @@
 
 local function my_callback(premature, msg, count)
     if premature then
-        golapis.print("[callback] Timer cancelled early, msg:", msg)
+        golapis.say("[callback] Timer cancelled early, msg:", msg)
         return
     end
-    golapis.print("[callback] Timer fired! msg:", msg, "count:", count)
+    golapis.say("[callback] Timer fired! msg:", msg, "count:", count)
 end
 
-golapis.print("Scheduling timers...")
+golapis.say("Scheduling timers...")
 
 -- Schedule a timer with arguments
 local ok, err = golapis.timer.at(0.5, my_callback, "hello", 42)
 if not ok then
-    golapis.print("Failed to create timer:", err)
+    golapis.say("Failed to create timer:", err)
 else
-    golapis.print("Timer 1 scheduled (0.5s delay)")
+    golapis.say("Timer 1 scheduled (0.5s delay)")
 end
 
 -- Schedule a quick timer with no extra args
 golapis.timer.at(0.2, function(premature)
     if not premature then
-        golapis.print("[callback] Quick timer fired!")
+        golapis.say("[callback] Quick timer fired!")
     end
 end)
-golapis.print("Timer 2 scheduled (0.2s delay)")
+golapis.say("Timer 2 scheduled (0.2s delay)")
 
 -- Timer callback can use async operations
 golapis.timer.at(0.3, function(premature)
     if premature then return end
-    golapis.print("[callback] Async timer started, sleeping 0.1s...")
+    golapis.say("[callback] Async timer started, sleeping 0.1s...")
     golapis.sleep(0.1)
-    golapis.print("[callback] Async timer done!")
+    golapis.say("[callback] Async timer done!")
 end)
-golapis.print("Timer 3 scheduled (0.3s delay, with async sleep)")
+golapis.say("Timer 3 scheduled (0.3s delay, with async sleep)")
 
-golapis.print("Main thread done. Wait() will block until all timers complete.")
+golapis.say("Main thread done. Wait() will block until all timers complete.")

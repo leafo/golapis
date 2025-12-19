@@ -15,10 +15,10 @@ local function format_value(v)
 end
 
 if args == nil then
-    golapis.print("No HTTP request context (CLI mode)")
+    golapis.say("No HTTP request context (CLI mode)")
 else
-    golapis.print("Query parameters:")
+    golapis.say("Query parameters:")
     for k, v in pairs(args) do
-        golapis.print("  " .. k .. " = " .. format_value(v))
+        golapis.say("  " .. k .. " = " .. format_value(v))
     end
 end
