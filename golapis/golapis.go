@@ -2,7 +2,7 @@ package golapis
 
 /*
 #cgo CFLAGS: -I../luajit/src
-#cgo LDFLAGS: -L../luajit/src -l:libluajit.a -lm -ldl
+#cgo LDFLAGS: -L../luajit/src -l:libluajit.a -lm -ldl -rdynamic
 
 #include "../luajit/src/lua.h"
 #include "../luajit/src/lauxlib.h"
