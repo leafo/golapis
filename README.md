@@ -135,35 +135,8 @@ golapis implements a subset of the OpenResty/nginx-lua API:
 | `golapis.req.get_uri_args([max])` | `ngx.req.get_uri_args([max])` | Parse query string parameters |
 | `golapis.timer.at(delay, cb, ...)` | `ngx.timer.at(delay, cb, ...)` | Schedule callback after delay |
 | `golapis.var.*` | `ngx.var.*` | Request variables (read-only, HTTP mode only) |
+| `golapis.header.*` | `ngx.header.*` | Response headers (write before first output) |
 | `golapis.ctx` | `ngx.ctx` | Per-request Lua table for storing data |
-
-### golapis.say / golapis.print
-
-These functions match nginx-lua's output behavior:
-
-- **No separator**: Arguments are concatenated directly with no separator between them
-- **Type coercion**: Values are converted to strings following nginx-lua rules:
-  - `string` → literal bytes (binary safe)
-  - `number` → decimal string (integers in int32 range use `%d`, others use `%.14g`)
-  - `boolean` → `"true"` or `"false"`
-  - `nil` → `"nil"`
-  - `golapis.null` → `"null"`
-  - `table` → array elements concatenated recursively
-- **Array tables**: Tables must be array-style (sequential integer keys starting at 1). Non-array tables return an error.
-- **Return values**: Returns `1` on success, or `nil, error_string` on error
-
-```lua
--- Examples
-golapis.say("hello")                    -- "hello\n"
-golapis.say("a", "b", "c")              -- "abc\n" (no separator)
-golapis.say("count: ", 42)              -- "count: 42\n"
-golapis.say({"a", "b", "c"})            -- "abc\n" (array concatenation)
-golapis.say({[1]="a", [3]="c"})         -- "anilc\n" (sparse array)
-
-golapis.print("no newline")             -- "no newline" (no trailing \n)
-
-local ok, err = golapis.say({foo="bar"}) -- nil, "bad argument #1..." (non-array)
-```
 
 ### golapis.var Variables
 
