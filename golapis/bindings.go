@@ -51,13 +51,14 @@ import (
 	"io/ioutil"
 	"net/http"
 	"time"
+	"unsafe"
 )
 
 //export golapis_http_request
 func golapis_http_request(L *C.lua_State) C.int {
 	if C.lua_gettop(L) != 1 {
 		C.lua_pushnil(L)
-		C.lua_pushstring(L, C.CString("http.request expects exactly one argument (url)"))
+		pushCString(L, "http.request expects exactly one argument (url)")
 		return 2
 	}
 
@@ -66,7 +67,7 @@ func golapis_http_request(L *C.lua_State) C.int {
 	resp, err := http.Get(url_str)
 	if err != nil {
 		C.lua_pushnil(L)
-		C.lua_pushstring(L, C.CString(err.Error()))
+		pushCString(L, err.Error())
 		return 2
 	}
 	defer resp.Body.Close()
@@ -74,12 +75,12 @@ func golapis_http_request(L *C.lua_State) C.int {
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		C.lua_pushnil(L)
-		C.lua_pushstring(L, C.CString(err.Error()))
+		pushCString(L, err.Error())
 		return 2
 	}
 
 	// body
-	C.lua_pushstring(L, C.CString(string(body)))
+	pushCString(L, string(body))
 
 	// status code
 	C.lua_pushinteger(L, C.lua_Integer(resp.StatusCode))
@@ -87,11 +88,11 @@ func golapis_http_request(L *C.lua_State) C.int {
 	// headers
 	C.lua_newtable_wrapper(L)
 	for key, values := range resp.Header {
-		C.lua_pushstring(L, C.CString(key))
+		pushCString(L, key)
 		C.lua_newtable_wrapper(L)
 		for i, value := range values {
 			C.lua_pushinteger(L, C.lua_Integer(i+1))
-			C.lua_pushstring(L, C.CString(value))
+			pushCString(L, value)
 			C.lua_settable(L, -3)
 		}
 		C.lua_settable(L, -3)
@@ -104,13 +105,13 @@ func golapis_http_request(L *C.lua_State) C.int {
 func golapis_sleep(L *C.lua_State) C.int {
 	if C.lua_gettop(L) != 1 {
 		C.lua_pushnil(L)
-		C.lua_pushstring(L, C.CString("sleep expects exactly one argument (seconds)"))
+		pushCString(L, "sleep expects exactly one argument (seconds)")
 		return 2
 	}
 
 	if C.lua_isnumber(L, 1) == 0 {
 		C.lua_pushnil(L)
-		C.lua_pushstring(L, C.CString("sleep argument must be a number"))
+		pushCString(L, "sleep argument must be a number")
 		return 2
 	}
 
@@ -120,7 +121,7 @@ func golapis_sleep(L *C.lua_State) C.int {
 	thread := getLuaThreadFromRegistry(L)
 	if thread == nil {
 		C.lua_pushnil(L)
-		C.lua_pushstring(L, C.CString("sleep: could not find thread context"))
+		pushCString(L, "sleep: could not find thread context")
 		return 2
 	}
 
@@ -157,7 +158,9 @@ func golapis_print(L *C.lua_State) C.int {
 			gls.writeOutput(str)
 		} else {
 			// For non-strings, convert to string using Lua's tostring
-			C.lua_getglobal_wrapper(L, C.CString("tostring"))
+			cToString := C.CString("tostring")
+			C.lua_getglobal_wrapper(L, cToString)
+			C.free(unsafe.Pointer(cToString))
 			C.lua_pushvalue(L, i)
 			if C.lua_pcall(L, 1, 1, 0) == 0 {
 				str := C.GoString(C.lua_tostring_wrapper(L, -1))
@@ -185,4 +188,10 @@ func (gls *GolapisLuaState) writeOutput(text string) {
 // SetupGolapis initializes the golapis global table with exported functions
 func (gls *GolapisLuaState) SetupGolapis() {
 	gls.golapisRef = C.setup_golapis_global(gls.luaState)
+}
+
+func pushCString(L *C.lua_State, s string) {
+	cstr := C.CString(s)
+	C.lua_pushstring(L, cstr)
+	C.free(unsafe.Pointer(cstr))
 }
