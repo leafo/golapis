@@ -54,6 +54,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sync"
 	"unsafe"
@@ -87,7 +88,8 @@ type StateEvent struct {
 	// For RunFile/RunString
 	Filename     string
 	Code         string
-	OutputWriter io.Writer // output destination for this request (e.g., http.ResponseWriter)
+	OutputWriter io.Writer     // output destination for this request (e.g., http.ResponseWriter)
+	Request      *http.Request // HTTP request for this event (nil in CLI mode)
 
 	// For ResumeThread (async completion)
 	Thread     *LuaThread
@@ -225,9 +227,10 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 		return &StateResponse{Error: err}
 	}
 
-	// Store the response channel and output writer on the thread
+	// Store the response channel, output writer, and HTTP request on the thread
 	thread.responseChan = event.Response
 	thread.outputWriter = event.OutputWriter
+	thread.httpRequest = event.Request
 
 	if err := thread.resume(); err != nil {
 		thread.close()

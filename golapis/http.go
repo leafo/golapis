@@ -38,6 +38,7 @@ func StartHTTPServer(filename, port string) {
 			Type:         EventRunFile,
 			Filename:     filename,
 			OutputWriter: w, // Each request gets its own writer
+			Request:      r, // Pass HTTP request for golapis.req.* functions
 			Response:     resp,
 		}
 

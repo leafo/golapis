@@ -7,8 +7,16 @@ import "C"
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"unsafe"
 )
+
+// Static C strings - allocated once at package init, never freed
+var cStrCtx *C.char
+
+func init() {
+	cStrCtx = C.CString("ctx")
+}
 
 // ThreadStatus represents the execution state of a LuaThread
 type ThreadStatus int
@@ -28,6 +36,7 @@ type LuaThread struct {
 	ctxRef       C.int               // Lua registry reference to the context table
 	responseChan chan *StateResponse // channel to send final response when thread completes
 	outputWriter io.Writer           // per-request output destination (e.g., http.ResponseWriter)
+	httpRequest  *http.Request       // HTTP request for this thread (nil in CLI mode)
 }
 
 // newThread creates a new LuaThread from the function currently on top of the stack (internal)
@@ -70,24 +79,18 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 // setCtx assigns the thread's context table to golapis.ctx
 func (t *LuaThread) setCtx() {
 	L := t.state.luaState
-	cCtx := C.CString("ctx")
-	defer C.free(unsafe.Pointer(cCtx))
-
 	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, t.state.golapisRef)
 	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, t.ctxRef)
-	C.lua_setfield_wrapper(L, -2, cCtx)
+	C.lua_setfield_wrapper(L, -2, cStrCtx)
 	C.lua_pop_wrapper(L, 1) // pop golapis table
 }
 
 // clearCtx sets golapis.ctx to nil
 func (t *LuaThread) clearCtx() {
 	L := t.state.luaState
-	cCtx := C.CString("ctx")
-	defer C.free(unsafe.Pointer(cCtx))
-
 	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, t.state.golapisRef)
 	C.lua_pushnil(L)
-	C.lua_setfield_wrapper(L, -2, cCtx)
+	C.lua_setfield_wrapper(L, -2, cStrCtx)
 	C.lua_pop_wrapper(L, 1) // pop golapis table
 }
 

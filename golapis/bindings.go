@@ -7,6 +7,7 @@ package golapis
 extern int golapis_sleep(lua_State *L);
 extern int golapis_http_request(lua_State *L);
 extern int golapis_print(lua_State *L);
+extern int golapis_req_get_uri_args(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -18,6 +19,10 @@ static int c_http_request_wrapper(lua_State *L) {
 
 static int c_print_wrapper(lua_State *L) {
     return golapis_print(L);
+}
+
+static int c_req_get_uri_args_wrapper(lua_State *L) {
+    return golapis_req_get_uri_args(L);
 }
 
 static int setup_golapis_global(lua_State *L) {
@@ -37,6 +42,12 @@ static int setup_golapis_global(lua_State *L) {
     lua_pushcfunction(L, c_http_request_wrapper);
     lua_setfield(L, -2, "request");
     lua_setfield(L, -2, "http");        // Add http table to `golapis`
+
+    // Create req table (for HTTP request inspection functions)
+    lua_newtable(L);
+    lua_pushcfunction(L, c_req_get_uri_args_wrapper);
+    lua_setfield(L, -2, "get_uri_args");
+    lua_setfield(L, -2, "req");         // Add req table to `golapis`
 
     lua_pushvalue(L, -1);               // Duplicate table for registry ref
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -197,6 +208,56 @@ func golapis_print(L *C.lua_State) C.int {
 	}
 	writer.Write([]byte("\n"))
 	return 0
+}
+
+//export golapis_req_get_uri_args
+func golapis_req_get_uri_args(L *C.lua_State) C.int {
+	// Get optional max argument (default 100, like nginx)
+	max := 100
+	if C.lua_gettop(L) >= 1 && C.lua_isnumber(L, 1) != 0 {
+		max = int(C.lua_tonumber(L, 1))
+	}
+
+	// Get current thread's HTTP request
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.httpRequest == nil {
+		// Not in HTTP context - return nil (nginx-lua compatible behavior)
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	// Parse query parameters from the request URL
+	queryValues := thread.httpRequest.URL.Query()
+
+	// Create result table
+	C.lua_newtable_wrapper(L)
+
+	count := 0
+	for key, values := range queryValues {
+		if count >= max {
+			break
+		}
+		count++
+
+		if len(values) == 1 {
+			// Single value: {key = "value"}
+			pushCString(L, key)
+			pushCString(L, values[0])
+			C.lua_settable(L, -3)
+		} else {
+			// Multiple values: {key = {"val1", "val2"}}
+			pushCString(L, key)
+			C.lua_newtable_wrapper(L)
+			for i, v := range values {
+				C.lua_pushinteger(L, C.lua_Integer(i+1))
+				pushCString(L, v)
+				C.lua_settable(L, -3)
+			}
+			C.lua_settable(L, -3)
+		}
+	}
+
+	return 1
 }
 
 // writeOutput writes output to buffer or writer
