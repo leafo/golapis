@@ -10,6 +10,7 @@ var luaStateMap = make(map[*C.lua_State]*GolapisLuaState)
 
 // luaThreadMap maps coroutine lua_State pointers to LuaThread objects
 // This allows async operations to find their thread context
+// If we add concurrent GolapisLuaStates then we need to synchronize access to this, but currently there is only one at a time and operations to this are synchronzied to the lua thread
 var luaThreadMap = make(map[*C.lua_State]*LuaThread)
 
 func (gls *GolapisLuaState) registerState() {
@@ -18,6 +19,14 @@ func (gls *GolapisLuaState) registerState() {
 
 func (gls *GolapisLuaState) unregisterState() {
 	delete(luaStateMap, gls.luaState)
+}
+
+func (thread *LuaThread) registerThread() {
+	luaThreadMap[thread.co] = thread
+}
+
+func (thread *LuaThread) unregisterThread() {
+	delete(luaThreadMap, thread.co)
 }
 
 func getLuaStateFromRegistry(L *C.lua_State) *GolapisLuaState {

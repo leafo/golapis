@@ -66,8 +66,7 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 		ctxRef: ctxRef,
 	}
 
-	// Register thread in map so async ops can find it
-	luaThreadMap[co] = thread
+	thread.registerThread()
 	gls.threadWg.Add(1)
 	if debugEnabled {
 		debugLog("newThread: created thread co=%p", co)
@@ -77,6 +76,7 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 }
 
 // setCtx assigns the thread's context table to golapis.ctx
+// this should be called before execution of the thread is resumed
 func (t *LuaThread) setCtx() {
 	L := t.state.luaState
 	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, t.state.golapisRef)
@@ -86,6 +86,7 @@ func (t *LuaThread) setCtx() {
 }
 
 // clearCtx sets golapis.ctx to nil
+// this should be called after execution of thread yields or ends
 func (t *LuaThread) clearCtx() {
 	L := t.state.luaState
 	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, t.state.golapisRef)
@@ -95,50 +96,14 @@ func (t *LuaThread) clearCtx() {
 }
 
 // resume starts or continues execution of the thread (internal)
-func (t *LuaThread) resume() error {
+// Pass nil or empty slice when no values are needed
+func (t *LuaThread) resume(values []interface{}) error {
 	if t.status == ThreadDead {
 		return fmt.Errorf("cannot resume dead thread")
 	}
 
 	if debugEnabled {
-		debugLog("thread.resume: co=%p starting", t.co)
-	}
-	t.setCtx() // Set golapis.ctx before resuming
-	t.status = ThreadRunning
-	result := C.lua_resume(t.co, 0)
-	t.clearCtx() // Clear golapis.ctx after yield/finish
-
-	switch result {
-	case 0: // LUA_OK
-		t.status = ThreadDead
-		if debugEnabled {
-			debugLog("thread.resume: co=%p completed", t.co)
-		}
-		return nil
-	case 1: // LUA_YIELD
-		t.status = ThreadYielded
-		if debugEnabled {
-			debugLog("thread.resume: co=%p yielded", t.co)
-		}
-		return nil
-	default:
-		t.status = ThreadDead
-		errMsg := C.GoString(C.lua_tostring_wrapper(t.co, -1))
-		if debugEnabled {
-			debugLog("thread.resume: co=%p error: %s", t.co, errMsg)
-		}
-		return fmt.Errorf("lua error: %s", errMsg)
-	}
-}
-
-// resumeWithValues pushes return values onto the stack and resumes the thread
-func (t *LuaThread) resumeWithValues(values []interface{}) error {
-	if t.status == ThreadDead {
-		return fmt.Errorf("cannot resume dead thread")
-	}
-
-	if debugEnabled {
-		debugLog("thread.resumeWithValues: co=%p resuming with %d values", t.co, len(values))
+		debugLog("thread.resume: co=%p resuming with %d values", t.co, len(values))
 	}
 
 	// Push return values onto coroutine stack
@@ -197,32 +162,34 @@ func (t *LuaThread) resumeWithValues(values []interface{}) error {
 	case 0: // LUA_OK
 		t.status = ThreadDead
 		if debugEnabled {
-			debugLog("thread.resumeWithValues: co=%p completed", t.co)
+			debugLog("thread.resume: co=%p completed", t.co)
 		}
 		return nil
 	case 1: // LUA_YIELD
 		t.status = ThreadYielded
 		if debugEnabled {
-			debugLog("thread.resumeWithValues: co=%p yielded", t.co)
+			debugLog("thread.resume: co=%p yielded", t.co)
 		}
 		return nil
 	default:
 		t.status = ThreadDead
 		errMsg := C.GoString(C.lua_tostring_wrapper(t.co, -1))
 		if debugEnabled {
-			debugLog("thread.resumeWithValues: co=%p error: %s", t.co, errMsg)
+			debugLog("thread.resume: co=%p error: %s", t.co, errMsg)
 		}
 		return fmt.Errorf("lua error: %s", errMsg)
 	}
 }
 
 // close cleans up the thread resources (internal)
+// Must be called on the lua state goroutine
 func (t *LuaThread) close() {
 	if t.co != nil {
 		if debugEnabled {
 			debugLog("thread.close: co=%p", t.co)
 		}
-		delete(luaThreadMap, t.co)
+		t.unregisterThread()
+
 		// Release the context table reference
 		if t.ctxRef != 0 {
 			C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, t.ctxRef)

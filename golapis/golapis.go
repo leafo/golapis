@@ -76,6 +76,9 @@ type GolapisLuaState struct {
 }
 
 // PendingTimer represents a scheduled timer waiting to fire
+// The coroutine is created when the timer is initially scheduled so that the
+// arguments can be passed directly without having to serialize them through
+// go.
 type PendingTimer struct {
 	State      *GolapisLuaState // parent state
 	CoRef      C.int            // registry ref to coroutine (prevents GC)
@@ -264,7 +267,7 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 	thread.outputWriter = event.OutputWriter
 	thread.httpRequest = event.Request
 
-	if err := thread.resume(); err != nil {
+	if err := thread.resume(nil); err != nil {
 		thread.close()
 		return &StateResponse{Error: err}
 	}
@@ -293,7 +296,7 @@ func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
 func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse {
 	thread := event.Thread
 
-	if err := thread.resumeWithValues(event.ReturnVals); err != nil {
+	if err := thread.resume(event.ReturnVals); err != nil {
 		// Send error to the original caller
 		if thread.responseChan != nil {
 			thread.responseChan <- &StateResponse{Error: err}
