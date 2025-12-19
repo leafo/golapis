@@ -27,17 +27,6 @@ static lua_State* new_lua_state() {
     return L;
 }
 
-static int run_lua_string(lua_State *L, const char *code) {
-    int result = luaL_loadstring(L, code);
-    if (result != 0) {
-        return result;
-    }
-    result = lua_pcall(L, 0, LUA_MULTRET, 0);
-    fflush(stdout);
-    return result;
-}
-
-
 static int load_lua_file(lua_State *L, const char *filename) {
     int result = luaL_loadfile(L, filename);
     fflush(stdout);
@@ -310,10 +299,34 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 
 // handleRunString executes a Lua code string (internal, called by event loop)
 func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
-	if err := gls.runString(event.Code); err != nil {
+	if err := gls.loadString(event.Code); err != nil {
 		return &StateResponse{Error: err}
 	}
-	return &StateResponse{}
+
+	thread, err := gls.newThread()
+	if err != nil {
+		return &StateResponse{Error: err}
+	}
+
+	// Store the response channel, output writer, and HTTP request on the thread
+	thread.responseChan = event.Response
+	thread.outputWriter = event.OutputWriter
+	thread.httpRequest = event.Request
+
+	if err := thread.resume(nil); err != nil {
+		thread.close()
+		return &StateResponse{Error: err}
+	}
+
+	// If thread is dead, clean up and respond immediately
+	if thread.status == ThreadDead {
+		thread.close()
+		return &StateResponse{}
+	}
+
+	// Thread yielded - don't respond yet, response will be sent when thread completes
+	// Return nil to signal that event loop should NOT send response
+	return nil
 }
 
 // handleResumeThread resumes a thread after an async operation completes
@@ -433,12 +446,12 @@ func (gls *GolapisLuaState) CancelAllTimers() {
 	}
 }
 
-// runString executes a Lua code string (internal)
-func (gls *GolapisLuaState) runString(code string) error {
+// loadString loads a Lua code string onto the stack, but doesn't execute it (internal)
+func (gls *GolapisLuaState) loadString(code string) error {
 	ccode := C.CString(code)
 	defer C.free(unsafe.Pointer(ccode))
 
-	result := C.run_lua_string(gls.luaState, ccode)
+	result := C.luaL_loadstring(gls.luaState, ccode)
 	if result != 0 {
 		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
 		C.pop_stack(gls.luaState, 1)
