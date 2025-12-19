@@ -23,3 +23,6 @@ jobs:
 
     - name: Build golapis
       run: make build
+
+    - name: Run tests
+      run: make test
