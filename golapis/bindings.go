@@ -226,31 +226,39 @@ func golapis_req_get_uri_args(L *C.lua_State) C.int {
 		return 1
 	}
 
-	// Parse query parameters from the request URL
-	queryValues := thread.httpRequest.URL.Query()
+	// Parse query parameters with nginx-lua compatible behavior
+	queryArgs := parseQueryString(thread.httpRequest.URL.RawQuery)
 
 	// Create result table
 	C.lua_newtable_wrapper(L)
 
 	count := 0
-	for key, values := range queryValues {
+	for key, args := range queryArgs {
 		if count >= max {
 			break
 		}
 		count++
 
-		if len(values) == 1 {
-			// Single value: {key = "value"}
+		if len(args) == 1 {
+			// Single value
 			pushCString(L, key)
-			pushCString(L, values[0])
+			if args[0].isBoolean {
+				C.lua_pushboolean(L, 1) // true
+			} else {
+				pushCString(L, args[0].value)
+			}
 			C.lua_settable(L, -3)
 		} else {
-			// Multiple values: {key = {"val1", "val2"}}
+			// Multiple values: {key = {val1, val2, ...}}
 			pushCString(L, key)
 			C.lua_newtable_wrapper(L)
-			for i, v := range values {
+			for i, arg := range args {
 				C.lua_pushinteger(L, C.lua_Integer(i+1))
-				pushCString(L, v)
+				if arg.isBoolean {
+					C.lua_pushboolean(L, 1) // true
+				} else {
+					pushCString(L, arg.value)
+				}
 				C.lua_settable(L, -3)
 			}
 			C.lua_settable(L, -3)
