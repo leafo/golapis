@@ -1,6 +1,16 @@
 # golapis
 
-A Go library for embedding LuaJIT with async-capable bindings.
+A Go library for embedding LuaJIT with async-capable bindings. The eventual
+goal of this project is to provide a self contained LuaJIT runtime that is
+capable of running Lapis apps with no dependency on Nginx. In order to
+accomplish this, this library will implement the `ngx` interface that
+[lua-nginx-module](https://github.com/openresty/lua-nginx-module) provides, but
+backed by Go concurrency and networking primitives.
+
+This project provides two paths: a `golapis` binary that can either execute
+code on the command line or start a webserver with an entry file, and a Go
+library that can be embedded into an existing Go project to initiate a Golapis
+server within `net/http`.
 
 ## Go Interface
 
@@ -135,3 +145,12 @@ Additional golapis functions not part of the ngx API:
 |----------|-------------|
 | `golapis.http.request(url)` | Simple async HTTP GET, returns `body, status, headers` |
 | `golapis.version` | Library version string |
+
+### golapis.debug
+
+Debugging utilities for timer inspection and control:
+
+| Function | Description |
+|----------|-------------|
+| `golapis.debug.pending_timer_count()` | Returns the number of pending timers |
+| `golapis.debug.cancel_timers()` | Cancels all pending timers, firing their callbacks immediately with `premature=true` |
