@@ -304,9 +304,9 @@ func golapis_timer_at(L *C.lua_State) C.int {
 
 	// Create PendingTimer
 	timer := &PendingTimer{
-		State:  gls,
-		CoRef:  coRef,
-		Co:     co,
+		State:      gls,
+		CoRef:      coRef,
+		Co:         co,
 		cancelChan: make(chan struct{}),
 	}
 
@@ -323,18 +323,23 @@ func golapis_timer_at(L *C.lua_State) C.int {
 		select {
 		case <-time.After(time.Duration(delay * float64(time.Second))):
 			// Normal timer fire
+			// Note: if the state stops after this fires, the send can block forever.
+			// Acceptable for process shutdown; revisit if states are restarted long-lived.
 			gls.eventChan <- &StateEvent{
 				Type:      EventTimerFire,
 				Timer:     timer,
 				Premature: false,
 			}
 		case <-timer.cancelChan:
-			// Premature cancellation (shutdown)
-			gls.eventChan <- &StateEvent{
-				Type:      EventTimerFire,
-				Timer:     timer,
-				Premature: true,
+			// Cancelled - check if we should fire callback or exit silently
+			if !timer.State.stopping.Load() {
+				gls.eventChan <- &StateEvent{
+					Type:      EventTimerFire,
+					Timer:     timer,
+					Premature: true,
+				}
 			}
+			// else: hard stop, exit silently without firing callback
 		}
 	}()
 
@@ -411,7 +416,7 @@ func golapis_debug_cancel_timers(L *C.lua_State) C.int {
 	if gls == nil {
 		return 0
 	}
-	gls.CancelAllTimers()
+	gls.CancelAllTimers() // premature cancel, callbacks fire
 	return 0
 }
 

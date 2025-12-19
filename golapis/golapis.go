@@ -57,6 +57,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -69,6 +70,7 @@ type GolapisLuaState struct {
 	eventChan    chan *StateEvent // all operations go through this channel
 	running      bool             // is event loop running?
 	threadWg     sync.WaitGroup   // tracks active threads for Wait()
+	stopping     atomic.Bool      // true when event loop is stopping
 
 	// Timer tracking
 	pendingTimers map[*PendingTimer]struct{} // set of pending timers
@@ -183,16 +185,18 @@ func (gls *GolapisLuaState) ClearOutput() {
 
 // Start launches the event loop goroutine
 func (gls *GolapisLuaState) Start() {
+	gls.stopping.Store(false)
 	gls.running = true
 	go gls.eventLoop()
 }
 
-// Stop shuts down the event loop, cancelling all pending timers with premature=true
+// Stop shuts down the event loop, cleaning up timers without firing callbacks
 func (gls *GolapisLuaState) Stop() {
 	if !gls.running {
 		return
 	}
-	// Cancel all pending timers (triggers premature firing)
+	// Hard stop: clean up timers without firing callbacks
+	gls.stopping.Store(true)
 	gls.CancelAllTimers()
 
 	resp := make(chan *StateResponse, 1)
@@ -236,6 +240,15 @@ func (gls *GolapisLuaState) eventLoop() {
 			gls.handleTimerFire(event)
 		case EventStop:
 			gls.running = false
+			// End end and cleanup the pending timers
+			gls.timerMu.Lock()
+			for timer := range gls.pendingTimers {
+				C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, timer.CoRef)
+				gls.threadWg.Done()
+			}
+			gls.pendingTimers = make(map[*PendingTimer]struct{})
+			gls.timerMu.Unlock()
+
 			if event.Response != nil {
 				event.Response <- &StateResponse{}
 			}
@@ -398,16 +411,12 @@ func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 }
 
 // CancelAllTimers cancels all pending timers, triggering them with premature=true
+// unless the state is stopping.
 func (gls *GolapisLuaState) CancelAllTimers() {
 	gls.timerMu.Lock()
-	timers := make([]*PendingTimer, 0, len(gls.pendingTimers))
-	for timer := range gls.pendingTimers {
-		timers = append(timers, timer)
-	}
-	gls.timerMu.Unlock()
+	defer gls.timerMu.Unlock()
 
-	// Close cancel channels to trigger premature firing
-	for _, timer := range timers {
+	for timer := range gls.pendingTimers {
 		timer.Cancel()
 	}
 }
