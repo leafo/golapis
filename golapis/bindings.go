@@ -8,6 +8,9 @@ extern int golapis_sleep(lua_State *L);
 extern int golapis_http_request(lua_State *L);
 extern int golapis_print(lua_State *L);
 extern int golapis_req_get_uri_args(lua_State *L);
+extern int golapis_timer_at(lua_State *L);
+extern int golapis_debug_cancel_timers(lua_State *L);
+extern int golapis_debug_pending_timer_count(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -23,6 +26,18 @@ static int c_print_wrapper(lua_State *L) {
 
 static int c_req_get_uri_args_wrapper(lua_State *L) {
     return golapis_req_get_uri_args(L);
+}
+
+static int c_timer_at_wrapper(lua_State *L) {
+    return golapis_timer_at(L);
+}
+
+static int c_debug_cancel_timers_wrapper(lua_State *L) {
+    return golapis_debug_cancel_timers(L);
+}
+
+static int c_debug_pending_timer_count_wrapper(lua_State *L) {
+    return golapis_debug_pending_timer_count(L);
 }
 
 static int setup_golapis_global(lua_State *L) {
@@ -48,6 +63,20 @@ static int setup_golapis_global(lua_State *L) {
     lua_pushcfunction(L, c_req_get_uri_args_wrapper);
     lua_setfield(L, -2, "get_uri_args");
     lua_setfield(L, -2, "req");         // Add req table to `golapis`
+
+    // Create timer table
+    lua_newtable(L);
+    lua_pushcfunction(L, c_timer_at_wrapper);
+    lua_setfield(L, -2, "at");
+    lua_setfield(L, -2, "timer");       // Add timer table to `golapis`
+
+    // Create debug table
+    lua_newtable(L);
+    lua_pushcfunction(L, c_debug_cancel_timers_wrapper);
+    lua_setfield(L, -2, "cancel_timers");
+    lua_pushcfunction(L, c_debug_pending_timer_count_wrapper);
+    lua_setfield(L, -2, "pending_timer_count");
+    lua_setfield(L, -2, "debug");       // Add debug table to `golapis`
 
     lua_pushvalue(L, -1);               // Duplicate table for registry ref
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -210,6 +239,114 @@ func golapis_print(L *C.lua_State) C.int {
 	return 0
 }
 
+//export golapis_timer_at
+func golapis_timer_at(L *C.lua_State) C.int {
+	nargs := int(C.lua_gettop(L))
+
+	// Validate: at least 2 arguments (delay, callback)
+	if nargs < 2 {
+		C.lua_pushnil(L)
+		pushCString(L, "expecting at least 2 arguments (delay, callback)")
+		return 2
+	}
+
+	// Validate delay is a number
+	if C.lua_isnumber(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushCString(L, "delay must be a number")
+		return 2
+	}
+
+	// Validate callback is a function (and not a C function)
+	if C.lua_isfunction_wrapper(L, 2) == 0 {
+		C.lua_pushnil(L)
+		pushCString(L, "callback must be a function")
+		return 2
+	}
+
+	delay := float64(C.lua_tonumber(L, 1))
+	if delay < 0 {
+		C.lua_pushnil(L)
+		pushCString(L, "delay must be >= 0")
+		return 2
+	}
+
+	// Get the GolapisLuaState (we need the main Lua state, not the coroutine)
+	gls := getLuaStateFromRegistry(L)
+	if gls == nil {
+		C.lua_pushnil(L)
+		pushCString(L, "timer.at: could not find golapis state")
+		return 2
+	}
+
+	mainL := gls.luaState
+
+	// Create a new coroutine on the main state
+	co := C.lua_newthread(mainL)
+	if co == nil {
+		C.lua_pushnil(L)
+		pushCString(L, "failed to create timer coroutine")
+		return 2
+	}
+
+	// Store coroutine in registry to prevent GC (it's currently on main stack)
+	coRef := C.luaL_ref_wrapper(mainL, C.LUA_REGISTRYINDEX)
+
+	// Copy callback function to coroutine stack
+	C.lua_pushvalue(L, 2) // Push callback onto current stack
+	C.lua_xmove(L, co, 1) // Move to coroutine
+
+	// Copy any additional arguments to coroutine stack
+	for i := 3; i <= nargs; i++ {
+		C.lua_pushvalue(L, C.int(i))
+		C.lua_xmove(L, co, 1)
+	}
+
+	// Create PendingTimer
+	timer := &PendingTimer{
+		State:  gls,
+		CoRef:  coRef,
+		Co:     co,
+		cancelChan: make(chan struct{}),
+	}
+
+	// Add to pending timers set
+	gls.timerMu.Lock()
+	gls.pendingTimers[timer] = struct{}{}
+	gls.timerMu.Unlock()
+
+	// Track this timer in the wait group so Wait() blocks until timer completes
+	gls.threadWg.Add(1)
+
+	// Launch timer goroutine
+	go func() {
+		select {
+		case <-time.After(time.Duration(delay * float64(time.Second))):
+			// Normal timer fire
+			gls.eventChan <- &StateEvent{
+				Type:      EventTimerFire,
+				Timer:     timer,
+				Premature: false,
+			}
+		case <-timer.cancelChan:
+			// Premature cancellation (shutdown)
+			gls.eventChan <- &StateEvent{
+				Type:      EventTimerFire,
+				Timer:     timer,
+				Premature: true,
+			}
+		}
+	}()
+
+	if debugEnabled {
+		debugLog("timer.at: created timer co=%p delay=%v", co, delay)
+	}
+
+	// Return true (success)
+	C.lua_pushboolean(L, 1)
+	return 1
+}
+
 //export golapis_req_get_uri_args
 func golapis_req_get_uri_args(L *C.lua_State) C.int {
 	// Get optional max argument (default 100, like nginx)
@@ -265,6 +402,30 @@ func golapis_req_get_uri_args(L *C.lua_State) C.int {
 		}
 	}
 
+	return 1
+}
+
+//export golapis_debug_cancel_timers
+func golapis_debug_cancel_timers(L *C.lua_State) C.int {
+	gls := getLuaStateFromRegistry(L)
+	if gls == nil {
+		return 0
+	}
+	gls.CancelAllTimers()
+	return 0
+}
+
+//export golapis_debug_pending_timer_count
+func golapis_debug_pending_timer_count(L *C.lua_State) C.int {
+	gls := getLuaStateFromRegistry(L)
+	if gls == nil {
+		C.lua_pushinteger(L, 0)
+		return 1
+	}
+	gls.timerMu.Lock()
+	count := len(gls.pendingTimers)
+	gls.timerMu.Unlock()
+	C.lua_pushinteger(L, C.lua_Integer(count))
 	return 1
 }
 

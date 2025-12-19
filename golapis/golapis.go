@@ -69,6 +69,27 @@ type GolapisLuaState struct {
 	eventChan    chan *StateEvent // all operations go through this channel
 	running      bool             // is event loop running?
 	threadWg     sync.WaitGroup   // tracks active threads for Wait()
+
+	// Timer tracking
+	pendingTimers map[*PendingTimer]struct{} // set of pending timers
+	timerMu       sync.Mutex                 // protects pendingTimers
+}
+
+// PendingTimer represents a scheduled timer waiting to fire
+type PendingTimer struct {
+	State      *GolapisLuaState // parent state
+	CoRef      C.int            // registry ref to coroutine (prevents GC)
+	Co         *C.lua_State     // the coroutine pointer
+	cancelChan chan struct{}    // closed to signal premature cancellation
+	cancelOnce sync.Once        // ensures cancel channel is only closed once
+}
+
+// Cancel closes the timer's cancel channel, signaling premature cancellation.
+// Safe to call multiple times.
+func (t *PendingTimer) Cancel() {
+	t.cancelOnce.Do(func() {
+		close(t.cancelChan)
+	})
 }
 
 // StateEventType represents the type of event sent to the state's event loop
@@ -78,6 +99,7 @@ const (
 	EventRunFile StateEventType = iota
 	EventRunString
 	EventResumeThread // async operation completed
+	EventTimerFire    // timer expired, execute callback
 	EventStop         // shutdown the event loop
 )
 
@@ -94,6 +116,10 @@ type StateEvent struct {
 	// For ResumeThread (async completion)
 	Thread     *LuaThread
 	ReturnVals []interface{}
+
+	// For EventTimerFire
+	Timer     *PendingTimer // timer that fired
+	Premature bool          // true if timer was cancelled early (shutdown)
 
 	// Response channel - caller blocks on this
 	Response chan *StateResponse
@@ -112,10 +138,11 @@ func NewGolapisLuaState() *GolapisLuaState {
 		return nil
 	}
 	gls := &GolapisLuaState{
-		luaState:     L,
-		outputBuffer: &bytes.Buffer{},
-		outputWriter: os.Stdout,
-		eventChan:    make(chan *StateEvent, 100), // buffered channel for events
+		luaState:      L,
+		outputBuffer:  &bytes.Buffer{},
+		outputWriter:  os.Stdout,
+		eventChan:     make(chan *StateEvent, 100), // buffered channel for events
+		pendingTimers: make(map[*PendingTimer]struct{}),
 	}
 	gls.registerState()
 	gls.SetupGolapis()
@@ -157,11 +184,14 @@ func (gls *GolapisLuaState) Start() {
 	go gls.eventLoop()
 }
 
-// Stop shuts down the event loop
+// Stop shuts down the event loop, cancelling all pending timers with premature=true
 func (gls *GolapisLuaState) Stop() {
 	if !gls.running {
 		return
 	}
+	// Cancel all pending timers (triggers premature firing)
+	gls.CancelAllTimers()
+
 	resp := make(chan *StateResponse, 1)
 	gls.eventChan <- &StateEvent{
 		Type:     EventStop,
@@ -199,6 +229,8 @@ func (gls *GolapisLuaState) eventLoop() {
 			resp = gls.handleRunString(event)
 		case EventResumeThread:
 			resp = gls.handleResumeThread(event)
+		case EventTimerFire:
+			gls.handleTimerFire(event)
 		case EventStop:
 			gls.running = false
 			if event.Response != nil {
@@ -280,6 +312,101 @@ func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse
 
 	// Response sent via thread.responseChan, not through event.Response
 	return nil
+}
+
+// handleTimerFire executes a timer callback in a new thread context
+func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
+	timer := event.Timer
+
+	// Remove timer from pending set
+	gls.timerMu.Lock()
+	delete(gls.pendingTimers, timer)
+	gls.timerMu.Unlock()
+
+	co := timer.Co
+
+	// Push premature flag as first argument
+	if event.Premature {
+		C.lua_pushboolean(co, 1)
+	} else {
+		C.lua_pushboolean(co, 0)
+	}
+
+	// Move premature flag to position 2 (after the callback function at position 1)
+	// Stack before: [callback, arg1, arg2, ..., premature]
+	// Stack after:  [callback, premature, arg1, arg2, ...]
+	C.lua_insert_wrapper(co, 2)
+
+	// Count args: total stack minus the callback function
+	nargs := C.lua_gettop(co) - 1
+
+	// Create context table for this timer thread
+	C.lua_newtable_wrapper(gls.luaState)
+	ctxRef := C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
+
+	// Create LuaThread wrapper for the coroutine
+	// Note: threadWg was already incremented when timer was scheduled in golapis_timer_at
+	thread := &LuaThread{
+		state:  gls,
+		co:     co,
+		status: ThreadCreated,
+		ctxRef: ctxRef,
+	}
+
+	// Register thread in map so async ops within the callback can find it
+	luaThreadMap[co] = thread
+
+	if debugEnabled {
+		debugLog("handleTimerFire: co=%p premature=%v nargs=%d", co, event.Premature, nargs)
+	}
+
+	// Set context and resume
+	thread.setCtx()
+	thread.status = ThreadRunning
+	result := C.lua_resume(co, nargs)
+	thread.clearCtx()
+
+	switch result {
+	case 0: // LUA_OK - completed
+		thread.status = ThreadDead
+		if debugEnabled {
+			debugLog("handleTimerFire: co=%p completed", co)
+		}
+		thread.close()
+	case 1: // LUA_YIELD - callback yielded (e.g., called sleep or http.request)
+		thread.status = ThreadYielded
+		if debugEnabled {
+			debugLog("handleTimerFire: co=%p yielded", co)
+		}
+		// Thread will be resumed later via EventResumeThread
+	default: // Error
+		thread.status = ThreadDead
+		errMsg := C.GoString(C.lua_tostring_wrapper(co, -1))
+		if debugEnabled {
+			debugLog("handleTimerFire: co=%p error: %s", co, errMsg)
+		}
+		// Log error but don't fail - timer callbacks are fire-and-forget
+		fmt.Printf("timer callback error: %s\n", errMsg)
+		thread.close()
+	}
+
+	// Release the coroutine registry reference (prevents GC of coroutine)
+	C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, timer.CoRef)
+}
+
+// CancelAllTimers cancels all pending timers, triggering them with premature=true
+func (gls *GolapisLuaState) CancelAllTimers() {
+	gls.timerMu.Lock()
+	timers := make([]*PendingTimer, 0, len(gls.pendingTimers))
+	for timer := range gls.pendingTimers {
+		timers = append(timers, timer)
+	}
+	gls.timerMu.Unlock()
+
+	// Close cancel channels to trigger premature firing
+	for _, timer := range timers {
+		timer.Cancel()
+	}
 }
 
 // runString executes a Lua code string (internal)

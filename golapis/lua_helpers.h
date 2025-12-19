@@ -42,4 +42,12 @@ static int lua_yield_wrapper(lua_State *L, int nresults) {
     return lua_yield(L, nresults);
 }
 
+static void lua_insert_wrapper(lua_State *L, int idx) {
+    lua_insert(L, idx);
+}
+
+static int lua_isfunction_wrapper(lua_State *L, int idx) {
+    return lua_isfunction(L, idx);
+}
+
 #endif

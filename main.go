@@ -43,6 +43,9 @@ func runSingleExecution(filename string) {
 		fmt.Printf("Error executing Lua file: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Wait for all threads and timers to complete before stopping
+	lua.Wait()
 }
 
 func startHTTPServer(filename, port string) {
