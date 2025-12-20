@@ -179,9 +179,17 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 )
+
+// bufferPool is used to reduce allocations in golapisOutput
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
 //export golapis_http_request
 func golapis_http_request(L *C.lua_State) C.int {
@@ -451,8 +459,12 @@ func golapisOutput(L *C.lua_State, appendNewline bool, funcName string) C.int {
 		return 1
 	}
 
-	// Use bytes.Buffer for accumulation
-	buf := &bytes.Buffer{}
+	// Get buffer from pool to reduce allocations
+	buf := bufferPool.Get().(*bytes.Buffer)
+	defer func() {
+		buf.Reset()
+		bufferPool.Put(buf)
+	}()
 
 	// Process each argument
 	nargs := int(C.lua_gettop(L))
