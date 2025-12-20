@@ -104,7 +104,7 @@ type StateEvent struct {
 	// For RunFile/RunString
 	Filename     string
 	Code         string
-	OutputWriter io.Writer     // output destination for this request (e.g., http.ResponseWriter)
+	OutputWriter io.Writer       // output destination for this request (e.g., http.ResponseWriter)
 	Request      *GolapisRequest // Request context for this event (nil in CLI mode)
 
 	// For ResumeThread (async completion)

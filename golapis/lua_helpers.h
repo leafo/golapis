@@ -65,6 +65,18 @@ static void* lua_touserdata_wrapper(lua_State *L, int idx) {
     return lua_touserdata(L, idx);
 }
 
+// Apply the cached headers metatable to the table at top of stack
+// The metatable must have been created during initialization with init_headers_metatable
+static void setup_headers_metatable(lua_State *L) {
+    luaL_getmetatable(L, "golapis.req.headers");  // Push cached metatable from registry
+    lua_setmetatable(L, -2);                      // setmetatable(headers_table, metatable)
+}
+
+// For raw table access (bypasses metamethods)
+static void lua_rawget_wrapper(lua_State *L, int idx) {
+    lua_rawget(L, idx);
+}
+
 // Get traceback from a coroutine error
 // L is the main state, co is the coroutine with error message on top of stack
 // Pushes traceback string onto L's stack (caller must pop)

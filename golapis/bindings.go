@@ -9,6 +9,8 @@ extern int golapis_http_request(lua_State *L);
 extern int golapis_print(lua_State *L);
 extern int golapis_say(lua_State *L);
 extern int golapis_req_get_uri_args(lua_State *L);
+extern int golapis_req_get_headers(lua_State *L);
+extern int golapis_req_headers_index(lua_State *L);
 extern int golapis_timer_at(lua_State *L);
 extern int golapis_debug_cancel_timers(lua_State *L);
 extern int golapis_debug_pending_timer_count(lua_State *L);
@@ -34,6 +36,22 @@ static int c_say_wrapper(lua_State *L) {
 
 static int c_req_get_uri_args_wrapper(lua_State *L) {
     return golapis_req_get_uri_args(L);
+}
+
+static int c_req_get_headers_wrapper(lua_State *L) {
+    return golapis_req_get_headers(L);
+}
+
+static int c_req_headers_index_wrapper(lua_State *L) {
+    return golapis_req_headers_index(L);
+}
+
+// Initialize the headers metatable in the registry (call once during setup)
+static void init_headers_metatable(lua_State *L) {
+    luaL_newmetatable(L, "golapis.req.headers");       // Create and register metatable
+    lua_pushcfunction(L, c_req_headers_index_wrapper); // Push __index function
+    lua_setfield(L, -2, "__index");                    // metatable.__index = function
+    lua_pop(L, 1);                                     // Pop metatable (stored in registry)
 }
 
 static int c_timer_at_wrapper(lua_State *L) {
@@ -102,6 +120,8 @@ static int setup_golapis_global(lua_State *L) {
     lua_newtable(L);
     lua_pushcfunction(L, c_req_get_uri_args_wrapper);
     lua_setfield(L, -2, "get_uri_args");
+    lua_pushcfunction(L, c_req_get_headers_wrapper);
+    lua_setfield(L, -2, "get_headers");
     lua_setfield(L, -2, "req");         // Add req table to `golapis`
 
     // Create timer table
@@ -135,6 +155,9 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "__newindex");  // metatable.__newindex = write handler
     lua_setmetatable(L, -2);            // setmetatable(header, metatable)
     lua_setfield(L, -2, "header");      // golapis.header = header
+
+    // Initialize cached metatables
+    init_headers_metatable(L);
 
     lua_pushvalue(L, -1);               // Duplicate table for registry ref
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -650,6 +673,144 @@ func golapis_req_get_uri_args(L *C.lua_State) C.int {
 	return 1
 }
 
+//export golapis_req_get_headers
+func golapis_req_get_headers(L *C.lua_State) C.int {
+	// Get optional max_headers argument (default 100, like nginx)
+	// 0 means unlimited
+	maxHeaders := 100
+	if C.lua_gettop(L) >= 1 && C.lua_isnumber(L, 1) != 0 {
+		maxHeaders = int(C.lua_tonumber(L, 1))
+	}
+
+	// Get optional raw argument (default false)
+	// When true: keep original header casing, no metamethod
+	// When false: lowercase keys, add __index metamethod for normalized lookup
+	raw := false
+	if C.lua_gettop(L) >= 2 && C.lua_type(L, 2) == C.LUA_TBOOLEAN {
+		raw = C.lua_toboolean(L, 2) != 0
+	}
+
+	// Get current thread's HTTP request
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		// Not in HTTP context - return empty table (nginx-lua compatible behavior)
+		C.lua_newtable_wrapper(L)
+		return 1
+	}
+
+	req := thread.request.Request
+
+	// Create result table
+	C.lua_newtable_wrapper(L)
+
+	// Count total header entries (each header line counts as 1)
+	count := 0
+	truncated := false
+
+	// Collect headers into the table
+	// Go's http.Header is map[string][]string where keys are canonicalized
+	for name, values := range req.Header {
+		if maxHeaders > 0 && count >= maxHeaders {
+			truncated = true
+			break
+		}
+
+		// Determine the key to use
+		var key string
+		if raw {
+			key = name // Keep canonical form (e.g., "Content-Type")
+		} else {
+			key = strings.ToLower(name) // Normalize to lowercase
+		}
+
+		if len(values) == 1 {
+			if maxHeaders > 0 && count >= maxHeaders {
+				truncated = true
+				break
+			}
+			// Push key
+			pushCString(L, key)
+			// Single value - push as string
+			pushCString(L, values[0])
+			C.lua_settable(L, -3)
+			count++
+		} else {
+			if maxHeaders > 0 {
+				remaining := maxHeaders - count
+				if remaining <= 0 {
+					truncated = true
+					break
+				}
+				if remaining < len(values) {
+					truncated = true
+					values = values[:remaining]
+				}
+			}
+			// Push key
+			pushCString(L, key)
+			// Multiple values - push as array table
+			C.lua_newtable_wrapper(L)
+			for i, v := range values {
+				C.lua_pushinteger(L, C.lua_Integer(i+1))
+				pushCString(L, v)
+				C.lua_settable(L, -3)
+			}
+			C.lua_settable(L, -3)
+			count += len(values)
+		}
+	}
+
+	// Add Host header (Go moves it from Header to Request.Host)
+	if req.Host != "" && (maxHeaders == 0 || count < maxHeaders) {
+		var hostKey string
+		if raw {
+			hostKey = "Host"
+		} else {
+			hostKey = "host"
+		}
+		pushCString(L, hostKey)
+		pushCString(L, req.Host)
+		C.lua_settable(L, -3)
+		count++
+	} else if req.Host != "" && maxHeaders > 0 && count >= maxHeaders {
+		truncated = true
+	}
+
+	// Add metamethod for normalized lookup (when raw=false)
+	if !raw {
+		// Call C helper that sets up metatable with __index for normalized header lookup
+		C.setup_headers_metatable(L)
+	}
+
+	// Return table and optional "truncated" error
+	if truncated {
+		pushCString(L, "truncated")
+		return 2
+	}
+	return 1
+}
+
+//export golapis_req_headers_index
+func golapis_req_headers_index(L *C.lua_State) C.int {
+	// __index metamethod for normalized header lookup
+	// Stack: [headers_table, key]
+	if C.lua_isstring(L, 2) == 0 {
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	key := C.GoString(C.lua_tostring_wrapper(L, 2))
+
+	// Normalize: lowercase, replace underscores with hyphens
+	normalized := strings.ToLower(strings.ReplaceAll(key, "_", "-"))
+
+	// Do rawget with normalized key
+	pushCString(L, normalized)
+	C.lua_rawget_wrapper(L, 1)
+
+	return 1
+}
+
 //export golapis_debug_cancel_timers
 func golapis_debug_cancel_timers(L *C.lua_State) C.int {
 	gls := getLuaStateFromRegistry(L)
@@ -816,25 +977,25 @@ func normalizeHeaderName(key string) string {
 // singleValueHeaders lists headers that should only have a single value.
 // When setting these headers with a table, only the last value is used.
 var singleValueHeaders = map[string]bool{
-	"Content-Type":              true,
-	"Content-Length":            true,
-	"Content-Encoding":          true,
-	"Content-Language":          true,
-	"Content-Location":          true,
-	"Content-Md5":               true,
-	"Content-Range":             true,
-	"Location":                  true,
-	"Last-Modified":             true,
-	"Etag":                      true,
-	"Accept-Ranges":             true,
-	"Age":                       true,
-	"Server":                    true,
-	"Retry-After":               true,
-	"Www-Authenticate":          true,
-	"Proxy-Authenticate":        true,
-	"Transfer-Encoding":         true,
-	"Content-Disposition":       true,
-	"Access-Control-Max-Age":    true,
+	"Content-Type":                true,
+	"Content-Length":              true,
+	"Content-Encoding":            true,
+	"Content-Language":            true,
+	"Content-Location":            true,
+	"Content-Md5":                 true,
+	"Content-Range":               true,
+	"Location":                    true,
+	"Last-Modified":               true,
+	"Etag":                        true,
+	"Accept-Ranges":               true,
+	"Age":                         true,
+	"Server":                      true,
+	"Retry-After":                 true,
+	"Www-Authenticate":            true,
+	"Proxy-Authenticate":          true,
+	"Transfer-Encoding":           true,
+	"Content-Disposition":         true,
+	"Access-Control-Max-Age":      true,
 	"Access-Control-Allow-Origin": true,
 }
 

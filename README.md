@@ -133,6 +133,7 @@ golapis implements a subset of the OpenResty/nginx-lua API:
 | `golapis.null` | `ngx.null` | Null sentinel value |
 | `golapis.sleep(seconds)` | `ngx.sleep(seconds)` | Async sleep, yields coroutine |
 | `golapis.req.get_uri_args([max])` | `ngx.req.get_uri_args([max])` | Parse query string parameters |
+| `golapis.req.get_headers([max], [raw])` | `ngx.req.get_headers([max], [raw])` | Get request headers as table |
 | `golapis.timer.at(delay, cb, ...)` | `ngx.timer.at(delay, cb, ...)` | Schedule callback after delay |
 | `golapis.var.*` | `ngx.var.*` | Request variables (read-only, HTTP mode only) |
 | `golapis.header.*` | `ngx.header.*` | Response headers (write before first output) |
