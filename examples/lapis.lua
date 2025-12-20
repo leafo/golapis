@@ -1,10 +1,17 @@
 _G.ngx = golapis
-local lapis = require "lapis"
 
-local app = lapis.Application()
+if not package.preload.app then
+  package.preload.app = function()
+    local lapis = require "lapis"
 
-app:match("/", function(self)
-  return "Hello world!"
-end)
+    local app = lapis.Application()
 
-require("lapis").serve(app)
+    app:match("/", function(self)
+      return "Hello world!"
+    end)
+
+    return app
+  end
+end
+
+require("lapis").serve("app")
