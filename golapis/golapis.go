@@ -52,14 +52,15 @@ import (
 
 // GolapisLuaState represents a Lua state with golapis functions initialized
 type GolapisLuaState struct {
-	luaState     *C.lua_State
-	golapisRef   C.int // registry reference to golapis table
-	outputBuffer *bytes.Buffer
-	outputWriter io.Writer
-	eventChan    chan *StateEvent // all operations go through this channel
-	running      bool             // is event loop running?
-	threadWg     sync.WaitGroup   // tracks active threads for Wait()
-	stopping     atomic.Bool      // true when event loop is stopping
+	luaState      *C.lua_State
+	golapisRef    C.int // registry reference to golapis table
+	entrypointRef C.int // registry reference to preloaded entrypoint function (0 = not set)
+	outputBuffer  *bytes.Buffer
+	outputWriter  io.Writer
+	eventChan     chan *StateEvent // all operations go through this channel
+	running       bool             // is event loop running?
+	threadWg      sync.WaitGroup   // tracks active threads for Wait()
+	stopping      atomic.Bool      // true when event loop is stopping
 
 	// Timer tracking
 	pendingTimers map[*PendingTimer]struct{} // set of pending timers
@@ -92,9 +93,10 @@ type StateEventType int
 const (
 	EventRunFile StateEventType = iota
 	EventRunString
-	EventResumeThread // async operation completed
-	EventTimerFire    // timer expired, execute callback
-	EventStop         // shutdown the event loop
+	EventRunEntryPoint // run the preloaded entrypoint
+	EventResumeThread  // async operation completed
+	EventTimerFire     // timer expired, execute callback
+	EventStop          // shutdown the event loop
 )
 
 // StateEvent represents an operation to be performed on the Lua state
@@ -151,6 +153,11 @@ func (gls *GolapisLuaState) Close() {
 		if gls.golapisRef != 0 {
 			C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.golapisRef)
 			gls.golapisRef = 0
+		}
+		// Release the entrypoint reference
+		if gls.entrypointRef != 0 {
+			C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.entrypointRef)
+			gls.entrypointRef = 0
 		}
 		gls.unregisterState()
 		C.lua_close(gls.luaState)
@@ -236,6 +243,8 @@ func (gls *GolapisLuaState) eventLoop() {
 			resp = gls.handleRunFile(event)
 		case EventRunString:
 			resp = gls.handleRunString(event)
+		case EventRunEntryPoint:
+			resp = gls.handleRunEntryPoint(event)
 		case EventResumeThread:
 			resp = gls.handleResumeThread(event)
 		case EventTimerFire:
@@ -276,6 +285,46 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 	if err != nil {
 		return &StateResponse{Error: err}
 	}
+
+	// Store the response channel, output writer, and request context on the thread
+	thread.responseChan = event.Response
+	thread.outputWriter = event.OutputWriter
+	thread.request = event.Request
+
+	if err := thread.resume(nil); err != nil {
+		thread.close()
+		return &StateResponse{Error: err}
+	}
+
+	// If thread is dead, clean up and respond immediately
+	if thread.status == ThreadDead {
+		thread.close()
+		return &StateResponse{Thread: thread}
+	}
+
+	// Thread yielded - don't respond yet, response will be sent when thread completes
+	// Return nil to signal that event loop should NOT send response
+	return nil
+}
+
+// handleRunEntryPoint executes the preloaded entrypoint function (internal, called by event loop)
+// Returns nil if thread is still running (response will be sent later via thread.responseChan)
+func (gls *GolapisLuaState) handleRunEntryPoint(event *StateEvent) *StateResponse {
+	if gls.entrypointRef == 0 {
+		return &StateResponse{Error: errors.New("no entrypoint preloaded")}
+	}
+
+	// Retrieve preloaded entrypoint from registry
+	C.lua_rawgeti_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.entrypointRef)
+
+	thread, err := gls.newThread()
+	if err != nil {
+		C.pop_stack(gls.luaState, 1)
+		return &StateResponse{Error: err}
+	}
+
+	// Pop the function from main stack (newThread leaves it there)
+	C.pop_stack(gls.luaState, 1)
 
 	// Store the response channel, output writer, and request context on the thread
 	thread.responseChan = event.Response
@@ -472,5 +521,27 @@ func (gls *GolapisLuaState) loadFile(filename string) error {
 		C.pop_stack(gls.luaState, 1)
 		return errors.New(errMsg)
 	}
+	return nil
+}
+
+// PreloadEntryPointFile loads a Lua file and stores the compiled function in the registry.
+// This should be called once at startup for HTTP mode to avoid reloading per-request.
+func (gls *GolapisLuaState) PreloadEntryPointFile(filename string) error {
+	cfilename := C.CString(filename)
+	defer C.free(unsafe.Pointer(cfilename))
+
+	result := C.load_lua_file(gls.luaState, cfilename)
+	if result != 0 {
+		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
+		C.pop_stack(gls.luaState, 1)
+		return errors.New(errMsg)
+	}
+
+	// Store function in registry (pops from stack)
+	if gls.entrypointRef != 0 {
+		C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.entrypointRef)
+		gls.entrypointRef = 0
+	}
+	gls.entrypointRef = C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
 	return nil
 }

@@ -21,6 +21,12 @@ func StartHTTPServer(filename, port string) {
 		log.Fatal("Failed to create Lua state")
 	}
 
+	// Preload the entrypoint file at startup
+	if err := lua.PreloadEntryPointFile(filename); err != nil {
+		lua.Close()
+		log.Fatalf("Failed to load Lua script %s: %v", filename, err)
+	}
+
 	// Start the event loop (runs for lifetime of server)
 	lua.Start()
 
@@ -39,8 +45,7 @@ func StartHTTPServer(filename, port string) {
 
 		// Send request to shared Lua state's event loop
 		lua.eventChan <- &StateEvent{
-			Type:         EventRunFile,
-			Filename:     filename,
+			Type:         EventRunEntryPoint,
 			OutputWriter: wrappedWriter,
 			Request:      req,
 			Response:     resp,
