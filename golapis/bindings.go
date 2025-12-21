@@ -498,7 +498,7 @@ func golapis_escape_uri(L *C.lua_State) C.int {
 		return 2
 	}
 
-	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+	str := string(luaStringBytes(L, 1))
 
 	// Default type is 2
 	escapeType := 2
@@ -535,7 +535,7 @@ func golapis_unescape_uri(L *C.lua_State) C.int {
 		return 2
 	}
 
-	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+	str := string(luaStringBytes(L, 1))
 	result := unescapeURI(str)
 	pushGoString(L, result)
 	return 1
@@ -553,8 +553,8 @@ func golapis_md5(L *C.lua_State) C.int {
 		pushGoString(L, "md5: argument must be a string")
 		return 2
 	}
-	str := C.GoString(C.lua_tostring_wrapper(L, 1))
-	hash := md5.Sum([]byte(str))
+	data := luaStringBytes(L, 1)
+	hash := md5.Sum(data)
 	pushGoString(L, hex.EncodeToString(hash[:]))
 	return 1
 }
@@ -571,8 +571,8 @@ func golapis_md5_bin(L *C.lua_State) C.int {
 		pushGoString(L, "md5_bin: argument must be a string")
 		return 2
 	}
-	str := C.GoString(C.lua_tostring_wrapper(L, 1))
-	hash := md5.Sum([]byte(str))
+	data := luaStringBytes(L, 1)
+	hash := md5.Sum(data)
 	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&hash[0])), C.size_t(len(hash)))
 	return 1
 }
@@ -589,8 +589,8 @@ func golapis_sha1_bin(L *C.lua_State) C.int {
 		pushGoString(L, "sha1_bin: argument must be a string")
 		return 2
 	}
-	str := C.GoString(C.lua_tostring_wrapper(L, 1))
-	hash := sha1.Sum([]byte(str))
+	data := luaStringBytes(L, 1)
+	hash := sha1.Sum(data)
 	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&hash[0])), C.size_t(len(hash)))
 	return 1
 }
@@ -612,10 +612,10 @@ func golapis_hmac_sha1(L *C.lua_State) C.int {
 		pushGoString(L, "hmac_sha1: second argument (str) must be a string")
 		return 2
 	}
-	key := C.GoString(C.lua_tostring_wrapper(L, 1))
-	str := C.GoString(C.lua_tostring_wrapper(L, 2))
-	h := hmac.New(sha1.New, []byte(key))
-	h.Write([]byte(str))
+	key := luaStringBytes(L, 1)
+	data := luaStringBytes(L, 2)
+	h := hmac.New(sha1.New, key)
+	h.Write(data)
 	digest := h.Sum(nil)
 	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&digest[0])), C.size_t(len(digest)))
 	return 1
@@ -634,7 +634,7 @@ func golapis_encode_base64(L *C.lua_State) C.int {
 		pushGoString(L, "encode_base64: first argument must be a string")
 		return 2
 	}
-	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+	data := luaStringBytes(L, 1)
 
 	noPadding := false
 	if nargs == 2 && C.lua_toboolean(L, 2) != 0 {
@@ -643,9 +643,9 @@ func golapis_encode_base64(L *C.lua_State) C.int {
 
 	var result string
 	if noPadding {
-		result = base64.RawStdEncoding.EncodeToString([]byte(str))
+		result = base64.RawStdEncoding.EncodeToString(data)
 	} else {
-		result = base64.StdEncoding.EncodeToString([]byte(str))
+		result = base64.StdEncoding.EncodeToString(data)
 	}
 	pushGoString(L, result)
 	return 1
@@ -663,7 +663,7 @@ func golapis_decode_base64(L *C.lua_State) C.int {
 		pushGoString(L, "decode_base64: argument must be a string")
 		return 2
 	}
-	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+	str := string(luaStringBytes(L, 1))
 
 	// Try with padding first, then without (nginx-lua accepts both)
 	decoded, err := base64.StdEncoding.DecodeString(str)
@@ -694,7 +694,7 @@ func golapis_decode_base64mime(L *C.lua_State) C.int {
 		pushGoString(L, "decode_base64mime: argument must be a string")
 		return 2
 	}
-	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+	str := string(luaStringBytes(L, 1))
 
 	// Filter out non-base64 characters (MIME allows whitespace and ignores invalid chars)
 	filtered := filterBase64Chars(str)
@@ -1459,6 +1459,16 @@ func pushGoString(L *C.lua_State, s string) {
 		return
 	}
 	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(unsafe.StringData(s))), C.size_t(len(s)))
+}
+
+// luaStringBytes returns a copy of the Lua string at idx, preserving embedded NULs.
+func luaStringBytes(L *C.lua_State, idx C.int) []byte {
+	var strLen C.size_t
+	cstr := C.lua_tolstring_wrapper(L, idx, &strLen)
+	if cstr == nil {
+		return nil
+	}
+	return C.GoBytes(unsafe.Pointer(cstr), C.int(strLen))
 }
 
 //export golapis_var_index

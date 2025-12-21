@@ -200,3 +200,86 @@ func TestDecodeBase64MimeLua(t *testing.T) {
 		}
 	}
 }
+
+func TestHashWithNullBytesLua(t *testing.T) {
+	code := `
+		local input = "a\0b"
+
+		-- md5: should hash all 3 bytes
+		golapis.say(golapis.md5(input))
+
+		-- md5_bin: verify length and first byte
+		local md5bin = golapis.md5_bin(input)
+		golapis.say(#md5bin)
+		golapis.say(string.byte(md5bin, 1))
+
+		-- sha1_bin: verify length and first byte
+		local sha1bin = golapis.sha1_bin(input)
+		golapis.say(#sha1bin)
+		golapis.say(string.byte(sha1bin, 1))
+
+		-- hmac_sha1: test with null bytes in both key and data
+		local hmac = golapis.hmac_sha1("key\0secret", input)
+		golapis.say(#hmac)
+		golapis.say(string.byte(hmac, 1))
+
+		-- encode_base64: should encode all 3 bytes including null
+		golapis.say(golapis.encode_base64(input))
+
+		-- decode_base64: should decode to 3 bytes including null
+		local decoded = golapis.decode_base64("YQBi")
+		golapis.say(#decoded)
+		golapis.say(string.byte(decoded, 1))
+		golapis.say(string.byte(decoded, 2))
+		golapis.say(string.byte(decoded, 3))
+
+		-- decode_base64mime: should handle null bytes in output
+		local decoded_mime = golapis.decode_base64mime("YQBi")
+		golapis.say(#decoded_mime)
+		golapis.say(string.byte(decoded_mime, 2))
+
+		-- escape_uri: null byte should be escaped as %00
+		golapis.say(golapis.escape_uri(input))
+
+		-- unescape_uri: %00 should decode to null byte
+		local unescaped = golapis.unescape_uri("a%00b")
+		golapis.say(#unescaped)
+		golapis.say(string.byte(unescaped, 1))
+		golapis.say(string.byte(unescaped, 2))
+		golapis.say(string.byte(unescaped, 3))
+	`
+	output, err := runLuaAndCapture(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	expected := []string{
+		"70350f6027bce3713f6b76473084309b", // md5("a\0b")
+		"16",                               // md5_bin length
+		"112",                              // md5_bin first byte
+		"20",                               // sha1_bin length
+		"74",                               // sha1_bin first byte
+		"20",                               // hmac_sha1 length
+		"58",                               // hmac_sha1 first byte
+		"YQBi",                             // encode_base64("a\0b")
+		"3",                                // decode_base64 length
+		"97",                               // decode_base64 byte 1 ('a')
+		"0",                                // decode_base64 byte 2 (null)
+		"98",                               // decode_base64 byte 3 ('b')
+		"3",                                // decode_base64mime length
+		"0",                                // decode_base64mime byte 2 (null)
+		"a%00b",                            // escape_uri("a\0b")
+		"3",                                // unescape_uri length
+		"97",                               // unescape_uri byte 1 ('a')
+		"0",                                // unescape_uri byte 2 (null)
+		"98",                               // unescape_uri byte 3 ('b')
+	}
+	if len(lines) != len(expected) {
+		t.Fatalf("expected %d lines, got %d: %q", len(expected), len(lines), output)
+	}
+	for i, exp := range expected {
+		if lines[i] != exp {
+			t.Errorf("line %d: expected %q, got %q", i, exp, lines[i])
+		}
+	}
+}
