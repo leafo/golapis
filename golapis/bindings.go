@@ -215,6 +215,7 @@ static int setup_golapis_global(lua_State *L) {
 import "C"
 import (
 	"bytes"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -228,6 +229,9 @@ import (
 	"time"
 	"unsafe"
 )
+
+//go:embed bootstrap.lua
+var luaBootstrap string
 
 // bufferPool is used to reduce allocations in golapisOutput
 var bufferPool = sync.Pool{
@@ -1046,6 +1050,33 @@ func (gls *GolapisLuaState) writeOutput(text string) {
 // SetupGolapis initializes the golapis global table with exported functions
 func (gls *GolapisLuaState) SetupGolapis() {
 	gls.golapisRef = C.setup_golapis_global(gls.luaState)
+	if err := gls.runBootstrap(); err != nil {
+		panic(fmt.Sprintf("failed to run bootstrap: %v", err))
+	}
+}
+
+// runBootstrap executes the embedded bootstrap.lua with the golapis table as argument
+func (gls *GolapisLuaState) runBootstrap() error {
+	ccode := C.CString(luaBootstrap)
+	defer C.free(unsafe.Pointer(ccode))
+
+	if C.luaL_loadstring(gls.luaState, ccode) != 0 {
+		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
+		C.lua_pop_wrapper(gls.luaState, 1)
+		return errors.New(errMsg)
+	}
+
+	// Push golapis table from registry as argument
+	C.lua_rawgeti_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.golapisRef)
+
+	// Call bootstrap with 1 arg (golapis), 0 returns
+	if C.lua_pcall(gls.luaState, 1, 0, 0) != 0 {
+		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
+		C.lua_pop_wrapper(gls.luaState, 1)
+		return errors.New(errMsg)
+	}
+
+	return nil
 }
 
 func pushCString(L *C.lua_State, s string) {
