@@ -1032,7 +1032,7 @@ func golapis_var_index(L *C.lua_State) C.int {
 		return -1
 	}
 
-	value := resolveVar(thread.request.Request, key)
+	value := resolveVar(thread.request, key)
 	if value == nil {
 		C.lua_pushnil(L)
 	} else {
@@ -1043,27 +1043,38 @@ func golapis_var_index(L *C.lua_State) C.int {
 
 // resolveVar resolves an nginx-style variable name to its value from the HTTP request.
 // Returns nil if the variable is not set or not applicable.
-func resolveVar(req *http.Request, key string) *string {
+func resolveVar(req *GolapisRequest, key string) *string {
 	var result string
+	httpReq := req.Request
 
 	switch key {
 	case "request_method":
-		result = req.Method
+		result = httpReq.Method
 
 	case "request_uri":
-		result = req.URL.RequestURI()
+		result = httpReq.URL.RequestURI()
+
+	case "request_body":
+		if !req.BodyWasRead() {
+			return nil
+		}
+		bodyData := req.GetBody()
+		if bodyData == nil {
+			return nil
+		}
+		result = string(bodyData)
 
 	case "scheme":
-		if req.TLS != nil {
+		if httpReq.TLS != nil {
 			result = "https"
 		} else {
 			result = "http"
 		}
 
 	case "server_port":
-		_, port, err := net.SplitHostPort(req.Host)
+		_, port, err := net.SplitHostPort(httpReq.Host)
 		if err != nil {
-			if req.TLS != nil {
+			if httpReq.TLS != nil {
 				result = "443"
 			} else {
 				result = "80"
@@ -1077,26 +1088,26 @@ func resolveVar(req *http.Request, key string) *string {
 		return nil
 
 	case "remote_addr":
-		host, _, err := net.SplitHostPort(req.RemoteAddr)
+		host, _, err := net.SplitHostPort(httpReq.RemoteAddr)
 		if err != nil {
-			result = req.RemoteAddr
+			result = httpReq.RemoteAddr
 		} else {
 			result = host
 		}
 
 	case "host":
-		host, _, err := net.SplitHostPort(req.Host)
+		host, _, err := net.SplitHostPort(httpReq.Host)
 		if err != nil {
-			result = req.Host
+			result = httpReq.Host
 		} else {
 			result = host
 		}
 
 	case "args":
-		if req.URL.RawQuery == "" {
+		if httpReq.URL.RawQuery == "" {
 			return nil
 		}
-		result = req.URL.RawQuery
+		result = httpReq.URL.RawQuery
 
 	default:
 		// Check for http_* pattern (header access)
@@ -1104,12 +1115,12 @@ func resolveVar(req *http.Request, key string) *string {
 			headerName := http.CanonicalHeaderKey(strings.ReplaceAll(key[5:], "_", "-"))
 			// Go's http.Request moves Host header to req.Host, not req.Header
 			if headerName == "Host" {
-				if req.Host == "" {
+				if httpReq.Host == "" {
 					return nil
 				}
-				result = req.Host
+				result = httpReq.Host
 			} else {
-				headerValue := req.Header.Get(headerName)
+				headerValue := httpReq.Header.Get(headerName)
 				if headerValue == "" {
 					return nil
 				}

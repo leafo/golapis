@@ -527,3 +527,35 @@ func TestDefaultBodyLimit(t *testing.T) {
 		t.Errorf("DefaultClientMaxBodySize = %d, want %d", DefaultClientMaxBodySize, expected)
 	}
 }
+
+func TestVarRequestBody(t *testing.T) {
+	w, err := runLuaWithHTTPBody(t, "hello world", `
+		golapis.req.read_body()
+		golapis.say("body: " .. tostring(golapis.var.request_body))
+	`)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	body := w.Body.String()
+	expected := "body: hello world\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}
+
+func TestVarRequestBodyNotRead(t *testing.T) {
+	w, err := runLuaWithHTTPBody(t, "hello world", `
+		-- Don't call read_body()
+		golapis.say("body: " .. tostring(golapis.var.request_body))
+	`)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	body := w.Body.String()
+	expected := "body: nil\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}

@@ -148,6 +148,7 @@ golapis implements a subset of the OpenResty/nginx-lua API:
 |----------|-------------|
 | `request_method` | HTTP method (GET, POST, etc.) |
 | `request_uri` | Full request URI including query string |
+| `request_body` | Request body (nil if `read_body()` not called) |
 | `scheme` | "http" or "https" |
 | `host` | Hostname without port |
 | `server_port` | Server port number |
