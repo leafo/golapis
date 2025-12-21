@@ -41,14 +41,19 @@ static void pop_stack(lua_State *L, int n) {
 import "C"
 import (
 	"bytes"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
 )
+
+//go:embed moonscript_bootstrap.lua
+var moonscriptBootstrap string
 
 // GolapisLuaState represents a Lua state with golapis functions initialized
 type GolapisLuaState struct {
@@ -511,7 +516,12 @@ func (gls *GolapisLuaState) loadString(code string) error {
 }
 
 // loadFile loads a Lua file onto the stack, but doesn't execute it (internal)
+// For .moon files, it uses the MoonScript bootstrap to compile them first.
 func (gls *GolapisLuaState) loadFile(filename string) error {
+	if strings.HasSuffix(filename, ".moon") {
+		return gls.loadMoonFile(filename)
+	}
+
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))
 
@@ -524,17 +534,42 @@ func (gls *GolapisLuaState) loadFile(filename string) error {
 	return nil
 }
 
-// PreloadEntryPointFile loads a Lua file and stores the compiled function in the registry.
-// This should be called once at startup for HTTP mode to avoid reloading per-request.
-func (gls *GolapisLuaState) PreloadEntryPointFile(filename string) error {
+// loadMoonFile loads a MoonScript file by running the bootstrap that compiles it.
+// The compiled function is left on the stack, same as loadFile.
+func (gls *GolapisLuaState) loadMoonFile(filename string) error {
+	// Load the bootstrap code
+	ccode := C.CString(moonscriptBootstrap)
+	defer C.free(unsafe.Pointer(ccode))
+
+	result := C.luaL_loadstring(gls.luaState, ccode)
+	if result != 0 {
+		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
+		C.pop_stack(gls.luaState, 1)
+		return fmt.Errorf("failed to load moonscript bootstrap: %s", errMsg)
+	}
+
+	// Push filename as argument to the bootstrap
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))
+	C.lua_pushstring(gls.luaState, cfilename)
 
-	result := C.load_lua_file(gls.luaState, cfilename)
+	// Call bootstrap with 1 arg, 1 return value (the compiled function)
+	result = C.lua_pcall(gls.luaState, 1, 1, 0)
 	if result != 0 {
 		errMsg := C.GoString(C.lua_tostring_wrapper(gls.luaState, -1))
 		C.pop_stack(gls.luaState, 1)
 		return errors.New(errMsg)
+	}
+
+	// Stack now has compiled function, ready for newThread()
+	return nil
+}
+
+// PreloadEntryPointFile loads a Lua or MoonScript file and stores the compiled function in the registry.
+// This should be called once at startup for HTTP mode to avoid reloading per-request.
+func (gls *GolapisLuaState) PreloadEntryPointFile(filename string) error {
+	if err := gls.loadFile(filename); err != nil {
+		return err
 	}
 
 	// Store function in registry (pops from stack)
