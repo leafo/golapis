@@ -26,6 +26,13 @@ extern int golapis_escape_uri(lua_State *L);
 extern int golapis_unescape_uri(lua_State *L);
 extern int golapis_status_get(lua_State *L);
 extern int golapis_status_set(lua_State *L);
+extern int golapis_md5(lua_State *L);
+extern int golapis_md5_bin(lua_State *L);
+extern int golapis_sha1_bin(lua_State *L);
+extern int golapis_hmac_sha1(lua_State *L);
+extern int golapis_encode_base64(lua_State *L);
+extern int golapis_decode_base64(lua_State *L);
+extern int golapis_decode_base64mime(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -128,6 +135,34 @@ static int c_unescape_uri_wrapper(lua_State *L) {
     return golapis_unescape_uri(L);
 }
 
+static int c_md5_wrapper(lua_State *L) {
+    return golapis_md5(L);
+}
+
+static int c_md5_bin_wrapper(lua_State *L) {
+    return golapis_md5_bin(L);
+}
+
+static int c_sha1_bin_wrapper(lua_State *L) {
+    return golapis_sha1_bin(L);
+}
+
+static int c_hmac_sha1_wrapper(lua_State *L) {
+    return golapis_hmac_sha1(L);
+}
+
+static int c_encode_base64_wrapper(lua_State *L) {
+    return golapis_encode_base64(L);
+}
+
+static int c_decode_base64_wrapper(lua_State *L) {
+    return golapis_decode_base64(L);
+}
+
+static int c_decode_base64mime_wrapper(lua_State *L) {
+    return golapis_decode_base64mime(L);
+}
+
 // No-op - Go's time.Now() is already fast (VDSO). Exists for API compatibility.
 static int c_update_time_noop(lua_State *L) {
     (void)L;
@@ -202,6 +237,27 @@ static int setup_golapis_global(lua_State *L) {
 
     lua_pushcfunction(L, c_unescape_uri_wrapper);
     lua_setfield(L, -2, "unescape_uri");
+
+    lua_pushcfunction(L, c_md5_wrapper);
+    lua_setfield(L, -2, "md5");
+
+    lua_pushcfunction(L, c_md5_bin_wrapper);
+    lua_setfield(L, -2, "md5_bin");
+
+    lua_pushcfunction(L, c_sha1_bin_wrapper);
+    lua_setfield(L, -2, "sha1_bin");
+
+    lua_pushcfunction(L, c_hmac_sha1_wrapper);
+    lua_setfield(L, -2, "hmac_sha1");
+
+    lua_pushcfunction(L, c_encode_base64_wrapper);
+    lua_setfield(L, -2, "encode_base64");
+
+    lua_pushcfunction(L, c_decode_base64_wrapper);
+    lua_setfield(L, -2, "decode_base64");
+
+    lua_pushcfunction(L, c_decode_base64mime_wrapper);
+    lua_setfield(L, -2, "decode_base64mime");
 
     // Register golapis.null as lightuserdata(NULL)
     lua_pushlightuserdata(L, NULL);
@@ -280,7 +336,12 @@ static int setup_golapis_global(lua_State *L) {
 import "C"
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/md5"
+	"crypto/sha1"
 	_ "embed"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -478,6 +539,194 @@ func golapis_unescape_uri(L *C.lua_State) C.int {
 	result := unescapeURI(str)
 	pushGoString(L, result)
 	return 1
+}
+
+//export golapis_md5
+func golapis_md5(L *C.lua_State) C.int {
+	if C.lua_gettop(L) != 1 {
+		C.lua_pushnil(L)
+		pushGoString(L, "md5 expects exactly 1 argument")
+		return 2
+	}
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "md5: argument must be a string")
+		return 2
+	}
+	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+	hash := md5.Sum([]byte(str))
+	pushGoString(L, hex.EncodeToString(hash[:]))
+	return 1
+}
+
+//export golapis_md5_bin
+func golapis_md5_bin(L *C.lua_State) C.int {
+	if C.lua_gettop(L) != 1 {
+		C.lua_pushnil(L)
+		pushGoString(L, "md5_bin expects exactly 1 argument")
+		return 2
+	}
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "md5_bin: argument must be a string")
+		return 2
+	}
+	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+	hash := md5.Sum([]byte(str))
+	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&hash[0])), C.size_t(len(hash)))
+	return 1
+}
+
+//export golapis_sha1_bin
+func golapis_sha1_bin(L *C.lua_State) C.int {
+	if C.lua_gettop(L) != 1 {
+		C.lua_pushnil(L)
+		pushGoString(L, "sha1_bin expects exactly 1 argument")
+		return 2
+	}
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "sha1_bin: argument must be a string")
+		return 2
+	}
+	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+	hash := sha1.Sum([]byte(str))
+	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&hash[0])), C.size_t(len(hash)))
+	return 1
+}
+
+//export golapis_hmac_sha1
+func golapis_hmac_sha1(L *C.lua_State) C.int {
+	if C.lua_gettop(L) != 2 {
+		C.lua_pushnil(L)
+		pushGoString(L, "hmac_sha1 expects exactly 2 arguments (secret_key, str)")
+		return 2
+	}
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "hmac_sha1: first argument (secret_key) must be a string")
+		return 2
+	}
+	if C.lua_isstring(L, 2) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "hmac_sha1: second argument (str) must be a string")
+		return 2
+	}
+	key := C.GoString(C.lua_tostring_wrapper(L, 1))
+	str := C.GoString(C.lua_tostring_wrapper(L, 2))
+	h := hmac.New(sha1.New, []byte(key))
+	h.Write([]byte(str))
+	digest := h.Sum(nil)
+	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&digest[0])), C.size_t(len(digest)))
+	return 1
+}
+
+//export golapis_encode_base64
+func golapis_encode_base64(L *C.lua_State) C.int {
+	nargs := int(C.lua_gettop(L))
+	if nargs < 1 || nargs > 2 {
+		C.lua_pushnil(L)
+		pushGoString(L, "encode_base64 expects 1 or 2 arguments")
+		return 2
+	}
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "encode_base64: first argument must be a string")
+		return 2
+	}
+	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+
+	noPadding := false
+	if nargs == 2 && C.lua_toboolean(L, 2) != 0 {
+		noPadding = true
+	}
+
+	var result string
+	if noPadding {
+		result = base64.RawStdEncoding.EncodeToString([]byte(str))
+	} else {
+		result = base64.StdEncoding.EncodeToString([]byte(str))
+	}
+	pushGoString(L, result)
+	return 1
+}
+
+//export golapis_decode_base64
+func golapis_decode_base64(L *C.lua_State) C.int {
+	if C.lua_gettop(L) != 1 {
+		C.lua_pushnil(L)
+		pushGoString(L, "decode_base64 expects exactly 1 argument")
+		return 2
+	}
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "decode_base64: argument must be a string")
+		return 2
+	}
+	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+
+	// Try with padding first, then without (nginx-lua accepts both)
+	decoded, err := base64.StdEncoding.DecodeString(str)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(str)
+	}
+	if err != nil {
+		C.lua_pushnil(L)
+		return 1
+	}
+	if len(decoded) == 0 {
+		C.lua_pushlstring(L, nil, 0)
+		return 1
+	}
+	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&decoded[0])), C.size_t(len(decoded)))
+	return 1
+}
+
+//export golapis_decode_base64mime
+func golapis_decode_base64mime(L *C.lua_State) C.int {
+	if C.lua_gettop(L) != 1 {
+		C.lua_pushnil(L)
+		pushGoString(L, "decode_base64mime expects exactly 1 argument")
+		return 2
+	}
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "decode_base64mime: argument must be a string")
+		return 2
+	}
+	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+
+	// Filter out non-base64 characters (MIME allows whitespace and ignores invalid chars)
+	filtered := filterBase64Chars(str)
+
+	decoded, err := base64.StdEncoding.DecodeString(filtered)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(filtered)
+	}
+	if err != nil {
+		C.lua_pushnil(L)
+		return 1
+	}
+	if len(decoded) == 0 {
+		C.lua_pushlstring(L, nil, 0)
+		return 1
+	}
+	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&decoded[0])), C.size_t(len(decoded)))
+	return 1
+}
+
+// filterBase64Chars removes non-base64 characters for MIME decoding
+func filterBase64Chars(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=' {
+			sb.WriteByte(c)
+		}
+	}
+	return sb.String()
 }
 
 // Maximum recursion depth for table coercion to prevent stack overflow
