@@ -111,6 +111,13 @@ The `golapis` global table provides an ngx-compatible API. Functions use the sam
 | `golapis.req.start_time()` | Returns timestamp when request was created |
 | `golapis.escape_uri(str[, type])` | Escape URI string (type 0 or 2) |
 | `golapis.unescape_uri(str)` | Unescape URI string |
+| `golapis.encode_base64(str[, no_padding])` | Encode string to base64 |
+| `golapis.decode_base64(str)` | Decode base64 string (strict) |
+| `golapis.decode_base64mime(str)` | Decode base64 MIME (ignores whitespace) |
+| `golapis.md5(str)` | Returns hex MD5 digest |
+| `golapis.md5_bin(str)` | Returns binary MD5 digest |
+| `golapis.sha1_bin(str)` | Returns binary SHA-1 digest |
+| `golapis.hmac_sha1(key, str)` | Returns binary HMAC-SHA1 digest |
 | `golapis.req.get_uri_args([max])` | Parse query string parameters |
 | `golapis.req.read_body()` | Read and cache request body |
 | `golapis.req.get_body_data([max_bytes])` | Get raw request body as string |
