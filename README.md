@@ -98,49 +98,23 @@ func main() {
 
 ## Lua API
 
-The `golapis` global table is available in Lua scripts:
+The `golapis` global table provides an ngx-compatible API. Functions use the same signatures as their `ngx.*` equivalents:
 
 | Function | Description |
 |----------|-------------|
-| `golapis.say(...)` | Output values followed by newline, returns `1` or `nil, err` |
-| `golapis.print(...)` | Output values without newline, returns `1` or `nil, err` |
-| `golapis.sleep(seconds)` | Async sleep (yields the coroutine) |
-| `golapis.http.request(url)` | HTTP GET request, returns `body, status, headers` |
-| `golapis.null` | Null sentinel value (outputs as `"null"`) |
-| `golapis.version` | Library version string |
-
-### Example Lua Script
-
-```lua
-golapis.say("Hello from Lua!")
-golapis.say("Version: ", golapis.version)
-
-golapis.sleep(1)
-golapis.say("Slept for 1 second")
-
-local body, status, headers = golapis.http.request("https://example.com")
-golapis.say("Status: ", status)
-```
-
-## ngx API Compatibility
-
-golapis implements a subset of the OpenResty/nginx-lua API:
-
-| golapis | ngx equivalent | Notes |
-|---------|----------------|-------|
-| `golapis.say(...)` | `ngx.say(...)` | Output with newline, nginx-compatible type coercion |
-| `golapis.print(...)` | `ngx.print(...)` | Output without newline, nginx-compatible type coercion |
-| `golapis.null` | `ngx.null` | Null sentinel value |
-| `golapis.sleep(seconds)` | `ngx.sleep(seconds)` | Async sleep, yields coroutine |
-| `golapis.req.get_uri_args([max])` | `ngx.req.get_uri_args([max])` | Parse query string parameters |
-| `golapis.req.read_body()` | `ngx.req.read_body()` | Read and cache request body |
-| `golapis.req.get_body_data([max_bytes])` | `ngx.req.get_body_data([max_bytes])` | Get raw request body as string |
-| `golapis.req.get_post_args([max])` | `ngx.req.get_post_args([max])` | Parse POST body as form-urlencoded |
-| `golapis.req.get_headers([max], [raw])` | `ngx.req.get_headers([max], [raw])` | Get request headers as table |
-| `golapis.timer.at(delay, cb, ...)` | `ngx.timer.at(delay, cb, ...)` | Schedule callback after delay |
-| `golapis.var.*` | `ngx.var.*` | Request variables (read-only, HTTP mode only) |
-| `golapis.header.*` | `ngx.header.*` | Response headers (write before first output) |
-| `golapis.ctx` | `ngx.ctx` | Per-request Lua table for storing data |
+| `golapis.say(...)` | Output with newline |
+| `golapis.print(...)` | Output without newline |
+| `golapis.null` | Null sentinel value |
+| `golapis.sleep(seconds)` | Async sleep, yields coroutine |
+| `golapis.req.get_uri_args([max])` | Parse query string parameters |
+| `golapis.req.read_body()` | Read and cache request body |
+| `golapis.req.get_body_data([max_bytes])` | Get raw request body as string |
+| `golapis.req.get_post_args([max])` | Parse POST body as form-urlencoded |
+| `golapis.req.get_headers([max], [raw])` | Get request headers as table |
+| `golapis.timer.at(delay, cb, ...)` | Schedule callback after delay |
+| `golapis.var.*` | Request variables (read-only, HTTP mode only) |
+| `golapis.header.*` | Response headers (write before first output) |
+| `golapis.ctx` | Per-request Lua table for storing data |
 
 ### golapis.var Variables
 
@@ -155,6 +129,19 @@ golapis implements a subset of the OpenResty/nginx-lua API:
 | `remote_addr` | Client IP address |
 | `args` | Query string (nil if empty) |
 | `http_*` | Any HTTP header (e.g., `http_user_agent`, `http_host`) |
+
+### Example Lua Script
+
+```lua
+golapis.say("Hello from Lua!")
+golapis.say("Version: ", golapis.version)
+
+golapis.sleep(1)
+golapis.say("Slept for 1 second")
+
+local body, status, headers = golapis.http.request("https://example.com")
+golapis.say("Status: ", status)
+```
 
 ## Extensions
 
