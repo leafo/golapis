@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 )
 
 // ErrBodyTooLarge is returned when the request body exceeds the maximum size
@@ -14,6 +15,7 @@ type GolapisRequest struct {
 	Request         *http.Request // The underlying HTTP request
 	ResponseHeaders http.Header   // Accumulated response headers
 	HeadersSent     bool          // True after first body write
+	startTime       time.Time     // When request was created
 
 	// Body caching (body can only be read once from Go's Request.Body)
 	bodyRead bool   // Whether body has been read
@@ -30,7 +32,13 @@ func NewGolapisRequest(r *http.Request) *GolapisRequest {
 		Request:         r,
 		ResponseHeaders: make(http.Header),
 		HeadersSent:     false,
+		startTime:       time.Now(),
 	}
+}
+
+// StartTime returns the timestamp when the request was created
+func (r *GolapisRequest) StartTime() time.Time {
+	return r.startTime
 }
 
 // FlushHeaders writes accumulated response headers to the given ResponseWriter

@@ -106,3 +106,18 @@ func TestUpdateTimeDoesNotError(t *testing.T) {
 		t.Errorf("expected 'ok', got: %q", output)
 	}
 }
+
+func TestReqStartTimeReturnsNilOutsideHTTP(t *testing.T) {
+	// Outside HTTP context, req.start_time() should return nil
+	code := `
+		local t = golapis.req.start_time()
+		golapis.say("result:", tostring(t))
+	`
+	output, err := runLuaAndCapture(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "result:nil") {
+		t.Errorf("expected nil outside HTTP context, got: %q", output)
+	}
+}

@@ -108,6 +108,7 @@ The `golapis` global table provides an ngx-compatible API. Functions use the sam
 | `golapis.sleep(seconds)` | Async sleep, yields coroutine |
 | `golapis.now()` | Returns current Unix timestamp with microsecond precision |
 | `golapis.update_time()` | No-op for ngx API compatibility |
+| `golapis.req.start_time()` | Returns timestamp when request was created |
 | `golapis.req.get_uri_args([max])` | Parse query string parameters |
 | `golapis.req.read_body()` | Read and cache request body |
 | `golapis.req.get_body_data([max_bytes])` | Get raw request body as string |

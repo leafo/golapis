@@ -21,6 +21,7 @@ extern int golapis_var_index(lua_State *L);
 extern int golapis_header_index(lua_State *L);
 extern int golapis_header_newindex(lua_State *L);
 extern int golapis_now(lua_State *L);
+extern int golapis_req_start_time(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -60,6 +61,10 @@ static int c_req_get_body_data_wrapper(lua_State *L) {
 
 static int c_req_get_post_args_wrapper(lua_State *L) {
     return golapis_req_get_post_args(L);
+}
+
+static int c_req_start_time_wrapper(lua_State *L) {
+    return golapis_req_start_time(L);
 }
 
 // Initialize the headers metatable in the registry (call once during setup)
@@ -160,6 +165,8 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "get_body_data");
     lua_pushcfunction(L, c_req_get_post_args_wrapper);
     lua_setfield(L, -2, "get_post_args");
+    lua_pushcfunction(L, c_req_start_time_wrapper);
+    lua_setfield(L, -2, "start_time");
     lua_setfield(L, -2, "req");         // Add req table to `golapis`
 
     // Create timer table
@@ -330,6 +337,19 @@ func golapis_sleep(L *C.lua_State) C.int {
 func golapis_now(L *C.lua_State) C.int {
 	now := float64(time.Now().UnixNano()) / 1e9
 	C.lua_pushnumber(L, C.lua_Number(now))
+	return 1
+}
+
+//export golapis_req_start_time
+func golapis_req_start_time(L *C.lua_State) C.int {
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	startTime := float64(thread.request.StartTime().UnixNano()) / 1e9
+	C.lua_pushnumber(L, C.lua_Number(startTime))
 	return 1
 }
 

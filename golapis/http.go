@@ -52,8 +52,6 @@ func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 	setupGracefulShutdown(lua)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-
 		// Create request context and wrap the response writer
 		req := NewGolapisRequest(r)
 		req.maxBodySize = config.ClientMaxBodySize
@@ -75,14 +73,14 @@ func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 
 		if result.Error != nil {
 			http.Error(w, result.Error.Error(), http.StatusInternalServerError)
-			logHTTPRequest(r, http.StatusInternalServerError, 0, time.Since(start))
+			logHTTPRequest(r, req.StartTime(), http.StatusInternalServerError, 0)
 			return
 		}
 
 		// Apply response headers if not already sent (handles no-body case)
 		req.FlushHeaders(w)
 
-		logHTTPRequest(r, http.StatusOK, 0, time.Since(start))
+		logHTTPRequest(r, req.StartTime(), http.StatusOK, 0)
 	})
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
@@ -104,7 +102,7 @@ func setupGracefulShutdown(lua *GolapisLuaState) {
 
 // logHTTPRequest logs HTTP requests in nginx "combined" log format
 // Combined format: $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
-func logHTTPRequest(r *http.Request, status int, bodyBytes int64, duration time.Duration) {
+func logHTTPRequest(r *http.Request, startTime time.Time, status int, bodyBytes int64) {
 	remoteAddr := r.RemoteAddr
 	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
 		remoteAddr = forwarded
@@ -115,7 +113,8 @@ func logHTTPRequest(r *http.Request, status int, bodyBytes int64, duration time.
 		remoteUser = r.URL.User.Username()
 	}
 
-	timeLocal := time.Now().Format("02/Jan/2006:15:04:05 -0700")
+	timeLocal := startTime.Format("02/Jan/2006:15:04:05 -0700")
+	duration := time.Since(startTime)
 	request := fmt.Sprintf("%s %s %s", r.Method, r.URL.RequestURI(), r.Proto)
 	referer := r.Header.Get("Referer")
 	if referer == "" {
