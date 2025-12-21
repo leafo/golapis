@@ -309,3 +309,71 @@ func TestGetPostArgsNotInHTTPContext(t *testing.T) {
 		t.Fatalf("Lua error: %v", result.Error)
 	}
 }
+
+func TestGetBodyDataBasic(t *testing.T) {
+	w, err := runLuaWithHTTPBody(t, "hello world", `
+		golapis.req.read_body()
+		local data = golapis.req.get_body_data()
+		golapis.say("body: " .. tostring(data))
+	`)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	body := w.Body.String()
+	expected := "body: hello world\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}
+
+func TestGetBodyDataMaxBytes(t *testing.T) {
+	w, err := runLuaWithHTTPBody(t, "hello world", `
+		golapis.req.read_body()
+		local data = golapis.req.get_body_data(5)
+		golapis.say("body: " .. tostring(data))
+	`)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	body := w.Body.String()
+	expected := "body: hello\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}
+
+func TestGetBodyDataNotRead(t *testing.T) {
+	w, err := runLuaWithHTTPBody(t, "hello world", `
+		-- Don't call read_body() first
+		local data = golapis.req.get_body_data()
+		golapis.say("data: " .. tostring(data))
+	`)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	body := w.Body.String()
+	expected := "data: nil\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}
+
+func TestGetBodyDataEmptyBody(t *testing.T) {
+	w, err := runLuaWithHTTPBody(t, "", `
+		golapis.req.read_body()
+		local data = golapis.req.get_body_data()
+		golapis.say("data: " .. tostring(data))
+	`)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	body := w.Body.String()
+	expected := "data: nil\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}

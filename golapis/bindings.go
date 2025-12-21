@@ -12,6 +12,7 @@ extern int golapis_req_get_uri_args(lua_State *L);
 extern int golapis_req_get_headers(lua_State *L);
 extern int golapis_req_headers_index(lua_State *L);
 extern int golapis_req_read_body(lua_State *L);
+extern int golapis_req_get_body_data(lua_State *L);
 extern int golapis_req_get_post_args(lua_State *L);
 extern int golapis_timer_at(lua_State *L);
 extern int golapis_debug_cancel_timers(lua_State *L);
@@ -50,6 +51,10 @@ static int c_req_headers_index_wrapper(lua_State *L) {
 
 static int c_req_read_body_wrapper(lua_State *L) {
     return golapis_req_read_body(L);
+}
+
+static int c_req_get_body_data_wrapper(lua_State *L) {
+    return golapis_req_get_body_data(L);
 }
 
 static int c_req_get_post_args_wrapper(lua_State *L) {
@@ -134,6 +139,8 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "get_headers");
     lua_pushcfunction(L, c_req_read_body_wrapper);
     lua_setfield(L, -2, "read_body");
+    lua_pushcfunction(L, c_req_get_body_data_wrapper);
+    lua_setfield(L, -2, "get_body_data");
     lua_pushcfunction(L, c_req_get_post_args_wrapper);
     lua_setfield(L, -2, "get_post_args");
     lua_setfield(L, -2, "req");         // Add req table to `golapis`
@@ -870,6 +877,48 @@ func golapis_req_read_body(L *C.lua_State) C.int {
 
 	// Success - return nothing (nginx-lua compatible)
 	return 0
+}
+
+//export golapis_req_get_body_data
+func golapis_req_get_body_data(L *C.lua_State) C.int {
+	// Get optional max_bytes argument (0 or nil means no limit)
+	maxBytes := 0
+	if C.lua_gettop(L) >= 1 && C.lua_isnumber(L, 1) != 0 {
+		maxBytes = int(C.lua_tonumber(L, 1))
+	}
+
+	// Get current thread's HTTP request
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		// Not in HTTP context - return nil
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	// Check if body was read
+	if !thread.request.BodyWasRead() {
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	// Get the cached body
+	bodyData := thread.request.GetBody()
+	if bodyData == nil || len(bodyData) == 0 {
+		// Empty body - return nil (nginx-lua compatible)
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	// Apply max_bytes limit if specified
+	if maxBytes > 0 && len(bodyData) > maxBytes {
+		bodyData = bodyData[:maxBytes]
+	}
+
+	// Push body as string
+	cdata := C.CBytes(bodyData)
+	C.lua_pushlstring(L, (*C.char)(cdata), C.size_t(len(bodyData)))
+	C.free(cdata)
+	return 1
 }
 
 //export golapis_req_get_post_args
