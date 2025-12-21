@@ -15,7 +15,7 @@ all: build
 
 luajit:
 	@echo "Building LuaJIT..."
-	$(MAKE) -C luajit
+	$(MAKE) -C luajit $(if $(BUILDMODE),BUILDMODE=$(BUILDMODE))
 
 build: luajit
 	@echo "Building golapis..."
