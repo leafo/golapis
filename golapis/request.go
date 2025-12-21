@@ -1,9 +1,13 @@
 package golapis
 
 import (
+	"errors"
 	"io"
 	"net/http"
 )
+
+// ErrBodyTooLarge is returned when the request body exceeds the maximum size
+var ErrBodyTooLarge = errors.New("request body too large")
 
 // GolapisRequest wraps an HTTP request and holds request processing state
 type GolapisRequest struct {
@@ -15,6 +19,9 @@ type GolapisRequest struct {
 	bodyRead bool   // Whether body has been read
 	bodyData []byte // Cached body content
 	bodyErr  error  // Error from reading body (if any)
+
+	// Configuration
+	maxBodySize int64 // max body size in bytes (0 = unlimited)
 }
 
 // NewGolapisRequest creates a new GolapisRequest from an http.Request
@@ -65,6 +72,7 @@ func (r *GolapisRequest) WrapResponseWriter(w http.ResponseWriter) *headerFlushi
 
 // ReadBody reads and caches the request body. Safe to call multiple times.
 // Returns the cached body data and any error from the initial read.
+// If the body exceeds maxBodySize, returns ErrBodyTooLarge.
 func (r *GolapisRequest) ReadBody() ([]byte, error) {
 	if r.bodyRead {
 		return r.bodyData, r.bodyErr
@@ -77,9 +85,39 @@ func (r *GolapisRequest) ReadBody() ([]byte, error) {
 		return nil, nil
 	}
 
-	r.bodyData, r.bodyErr = io.ReadAll(r.Request.Body)
-	r.Request.Body.Close()
-	return r.bodyData, r.bodyErr
+	defer r.Request.Body.Close()
+
+	// Check Content-Length header first for early rejection
+	if r.maxBodySize > 0 && r.Request.ContentLength > r.maxBodySize {
+		r.bodyData = nil
+		r.bodyErr = ErrBodyTooLarge
+		return nil, r.bodyErr
+	}
+
+	// Use LimitedReader to cap the amount we read
+	var reader io.Reader = r.Request.Body
+	if r.maxBodySize > 0 {
+		// Read up to maxBodySize + 1 to detect overflow
+		reader = io.LimitReader(r.Request.Body, r.maxBodySize+1)
+	}
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		r.bodyData = nil
+		r.bodyErr = err
+		return nil, err
+	}
+
+	// Check if we hit the limit (read more than maxBodySize)
+	if r.maxBodySize > 0 && int64(len(data)) > r.maxBodySize {
+		r.bodyData = nil
+		r.bodyErr = ErrBodyTooLarge
+		return nil, r.bodyErr
+	}
+
+	r.bodyData = data
+	r.bodyErr = nil
+	return r.bodyData, nil
 }
 
 // BodyWasRead returns true if ReadBody has been called

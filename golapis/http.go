@@ -10,10 +10,28 @@ import (
 	"time"
 )
 
+// DefaultClientMaxBodySize is the default maximum request body size (1MB)
+const DefaultClientMaxBodySize int64 = 1 * 1024 * 1024
+
+// HTTPServerConfig holds configuration for the HTTP server
+type HTTPServerConfig struct {
+	ClientMaxBodySize int64 // max request body size in bytes (0 = unlimited)
+}
+
+// DefaultHTTPServerConfig returns the default HTTP server configuration.
+func DefaultHTTPServerConfig() *HTTPServerConfig {
+	return &HTTPServerConfig{
+		ClientMaxBodySize: DefaultClientMaxBodySize,
+	}
+}
+
 // StartHTTPServer starts an HTTP server that executes the given Lua script for each request
 // Uses a single shared GolapisLuaState for all requests with cooperative scheduling
-func StartHTTPServer(filename, port string) {
+func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 	fmt.Printf("Starting HTTP server on port %s with script: %s\n", port, filename)
+	if config == nil {
+		config = DefaultHTTPServerConfig()
+	}
 
 	// Create single shared Lua state at server startup
 	lua := NewGolapisLuaState()
@@ -38,6 +56,7 @@ func StartHTTPServer(filename, port string) {
 
 		// Create request context and wrap the response writer
 		req := NewGolapisRequest(r)
+		req.maxBodySize = config.ClientMaxBodySize
 		wrappedWriter := req.WrapResponseWriter(w)
 
 		// Create response channel for this request

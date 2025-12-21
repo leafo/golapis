@@ -49,5 +49,6 @@ func runSingleExecution(filename string) {
 }
 
 func startHTTPServer(filename, port string) {
-	golapis.StartHTTPServer(filename, port)
+	config := golapis.DefaultHTTPServerConfig()
+	golapis.StartHTTPServer(filename, port, config)
 }

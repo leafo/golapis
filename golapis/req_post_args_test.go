@@ -377,3 +377,153 @@ func TestGetBodyDataEmptyBody(t *testing.T) {
 		t.Errorf("Unexpected body: %q, want %q", body, expected)
 	}
 }
+
+// runLuaWithHTTPBodyAndLimit runs Lua code with a POST request body and max body size limit
+func runLuaWithHTTPBodyAndLimit(t *testing.T, body string, maxBodySize int64, code string) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+
+	gls := NewGolapisLuaState()
+	if gls == nil {
+		t.Fatal("Failed to create Lua state")
+	}
+	defer gls.Close()
+
+	gls.Start()
+	defer gls.Stop()
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/test", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	req := NewGolapisRequest(r)
+	req.maxBodySize = maxBodySize
+	wrappedWriter := req.WrapResponseWriter(w)
+
+	resp := make(chan *StateResponse, 1)
+	gls.eventChan <- &StateEvent{
+		Type:         EventRunString,
+		Code:         code,
+		OutputWriter: wrappedWriter,
+		Request:      req,
+		Response:     resp,
+	}
+
+	result := <-resp
+	gls.Wait()
+	req.FlushHeaders(w)
+
+	return w, result.Error
+}
+
+func TestReadBodyWithinLimit(t *testing.T) {
+	w, err := runLuaWithHTTPBodyAndLimit(t, "hello world", 1024, `
+		local ok, err = golapis.req.read_body()
+		if err then
+			error("unexpected error: " .. err)
+		end
+		local data = golapis.req.get_body_data()
+		golapis.say("len: " .. #data)
+	`)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	body := w.Body.String()
+	expected := "len: 11\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}
+
+func TestReadBodyExceedsLimit(t *testing.T) {
+	largeBody := strings.Repeat("x", 100)
+	w, err := runLuaWithHTTPBodyAndLimit(t, largeBody, 10, `
+		local ok, err = golapis.req.read_body()
+		if ok ~= nil then
+			error("expected nil, got value")
+		end
+		golapis.say("err: " .. tostring(err))
+	`)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	body := w.Body.String()
+	expected := "err: request body too large\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}
+
+func TestReadBodyContentLengthRejection(t *testing.T) {
+	// Test that Content-Length header is checked before reading
+	gls := NewGolapisLuaState()
+	if gls == nil {
+		t.Fatal("Failed to create Lua state")
+	}
+	defer gls.Close()
+
+	gls.Start()
+	defer gls.Stop()
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/test", strings.NewReader("small"))
+	r.ContentLength = 1000000 // Claim 1MB
+
+	req := NewGolapisRequest(r)
+	req.maxBodySize = 10 // Only allow 10 bytes
+	wrappedWriter := req.WrapResponseWriter(w)
+
+	resp := make(chan *StateResponse, 1)
+	gls.eventChan <- &StateEvent{
+		Type: EventRunString,
+		Code: `
+			local ok, err = golapis.req.read_body()
+			golapis.say("err: " .. tostring(err))
+		`,
+		OutputWriter: wrappedWriter,
+		Request:      req,
+		Response:     resp,
+	}
+
+	result := <-resp
+	gls.Wait()
+
+	if result.Error != nil {
+		t.Fatalf("Lua error: %v", result.Error)
+	}
+
+	body := w.Body.String()
+	expected := "err: request body too large\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}
+
+func TestReadBodyUnlimited(t *testing.T) {
+	largeBody := strings.Repeat("x", 10000)
+	w, err := runLuaWithHTTPBodyAndLimit(t, largeBody, 0, `
+		local ok, err = golapis.req.read_body()
+		if err then
+			error("unexpected error: " .. err)
+		end
+		local data = golapis.req.get_body_data()
+		golapis.say("len: " .. #data)
+	`)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	body := w.Body.String()
+	expected := "len: 10000\n"
+	if body != expected {
+		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}
+
+func TestDefaultBodyLimit(t *testing.T) {
+	expected := int64(1 * 1024 * 1024)
+	if DefaultClientMaxBodySize != expected {
+		t.Errorf("DefaultClientMaxBodySize = %d, want %d", DefaultClientMaxBodySize, expected)
+	}
+}
