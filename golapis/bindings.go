@@ -20,6 +20,7 @@ extern int golapis_debug_pending_timer_count(lua_State *L);
 extern int golapis_var_index(lua_State *L);
 extern int golapis_header_index(lua_State *L);
 extern int golapis_header_newindex(lua_State *L);
+extern int golapis_now(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -106,6 +107,16 @@ static int c_header_newindex_wrapper(lua_State *L) {
     return result;
 }
 
+static int c_now_wrapper(lua_State *L) {
+    return golapis_now(L);
+}
+
+// No-op - Go's time.Now() is already fast (VDSO). Exists for API compatibility.
+static int c_update_time_noop(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
 static int setup_golapis_global(lua_State *L) {
     lua_newtable(L);                    // Create new table `golapis`
 
@@ -114,6 +125,12 @@ static int setup_golapis_global(lua_State *L) {
 
     lua_pushcfunction(L, c_sleep_wrapper);
     lua_setfield(L, -2, "sleep");
+
+    lua_pushcfunction(L, c_now_wrapper);
+    lua_setfield(L, -2, "now");
+
+    lua_pushcfunction(L, c_update_time_noop);
+    lua_setfield(L, -2, "update_time");
 
     lua_pushcfunction(L, c_print_wrapper);
     lua_setfield(L, -2, "print");
@@ -307,6 +324,13 @@ func golapis_sleep(L *C.lua_State) C.int {
 
 	// Yield with 0 values (nginx-lua pattern)
 	return C.lua_yield_wrapper(L, 0)
+}
+
+//export golapis_now
+func golapis_now(L *C.lua_State) C.int {
+	now := float64(time.Now().UnixNano()) / 1e9
+	C.lua_pushnumber(L, C.lua_Number(now))
+	return 1
 }
 
 // Maximum recursion depth for table coercion to prevent stack overflow
