@@ -111,9 +111,11 @@ func (t *LuaThread) resume(values []interface{}) error {
 	for _, v := range values {
 		switch val := v.(type) {
 		case string:
-			cstr := C.CString(val)
-			C.lua_pushstring(t.co, cstr)
-			C.free(unsafe.Pointer(cstr))
+			if len(val) == 0 {
+				C.lua_pushlstring(t.co, nil, 0)
+			} else {
+				C.lua_pushlstring(t.co, (*C.char)(unsafe.Pointer(unsafe.StringData(val))), C.size_t(len(val)))
+			}
 		case int:
 			C.lua_pushinteger(t.co, C.lua_Integer(val))
 		case int64:
@@ -132,17 +134,21 @@ func (t *LuaThread) resume(values []interface{}) error {
 			// Push as nested Lua table (for HTTP headers)
 			C.lua_newtable_wrapper(t.co)
 			for key, headerValues := range val {
-				ckey := C.CString(key)
-				C.lua_pushstring(t.co, ckey)
-				C.free(unsafe.Pointer(ckey))
+				if len(key) == 0 {
+					C.lua_pushlstring(t.co, nil, 0)
+				} else {
+					C.lua_pushlstring(t.co, (*C.char)(unsafe.Pointer(unsafe.StringData(key))), C.size_t(len(key)))
+				}
 
 				// Create array of values for this header
 				C.lua_newtable_wrapper(t.co)
 				for i, hv := range headerValues {
 					C.lua_pushinteger(t.co, C.lua_Integer(i+1))
-					cv := C.CString(hv)
-					C.lua_pushstring(t.co, cv)
-					C.free(unsafe.Pointer(cv))
+					if len(hv) == 0 {
+						C.lua_pushlstring(t.co, nil, 0)
+					} else {
+						C.lua_pushlstring(t.co, (*C.char)(unsafe.Pointer(unsafe.StringData(hv))), C.size_t(len(hv)))
+					}
 					C.lua_settable(t.co, -3)
 				}
 				C.lua_settable(t.co, -3)

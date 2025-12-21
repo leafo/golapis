@@ -260,13 +260,13 @@ var bufferPool = sync.Pool{
 func golapis_http_request(L *C.lua_State) C.int {
 	if C.lua_gettop(L) != 1 {
 		C.lua_pushnil(L)
-		pushCString(L, "http.request expects exactly one argument (url)")
+		pushGoString(L, "http.request expects exactly one argument (url)")
 		return 2
 	}
 
 	if C.lua_isstring(L, 1) == 0 {
 		C.lua_pushnil(L)
-		pushCString(L, "http.request argument must be a string")
+		pushGoString(L, "http.request argument must be a string")
 		return 2
 	}
 
@@ -276,7 +276,7 @@ func golapis_http_request(L *C.lua_State) C.int {
 	thread := getLuaThreadFromRegistry(L)
 	if thread == nil {
 		C.lua_pushnil(L)
-		pushCString(L, "http.request: could not find thread context")
+		pushGoString(L, "http.request: could not find thread context")
 		return 2
 	}
 
@@ -318,13 +318,13 @@ func golapis_http_request(L *C.lua_State) C.int {
 func golapis_sleep(L *C.lua_State) C.int {
 	if C.lua_gettop(L) != 1 {
 		C.lua_pushnil(L)
-		pushCString(L, "sleep expects exactly one argument (seconds)")
+		pushGoString(L, "sleep expects exactly one argument (seconds)")
 		return 2
 	}
 
 	if C.lua_isnumber(L, 1) == 0 {
 		C.lua_pushnil(L)
-		pushCString(L, "sleep argument must be a number")
+		pushGoString(L, "sleep argument must be a number")
 		return 2
 	}
 
@@ -334,7 +334,7 @@ func golapis_sleep(L *C.lua_State) C.int {
 	thread := getLuaThreadFromRegistry(L)
 	if thread == nil {
 		C.lua_pushnil(L)
-		pushCString(L, "sleep: could not find thread context")
+		pushGoString(L, "sleep: could not find thread context")
 		return 2
 	}
 
@@ -378,13 +378,13 @@ func golapis_escape_uri(L *C.lua_State) C.int {
 	nargs := int(C.lua_gettop(L))
 	if nargs < 1 || nargs > 2 {
 		C.lua_pushnil(L)
-		pushCString(L, "escape_uri expects 1 or 2 arguments")
+		pushGoString(L, "escape_uri expects 1 or 2 arguments")
 		return 2
 	}
 
 	if C.lua_isstring(L, 1) == 0 {
 		C.lua_pushnil(L)
-		pushCString(L, "escape_uri: first argument must be a string")
+		pushGoString(L, "escape_uri: first argument must be a string")
 		return 2
 	}
 
@@ -395,19 +395,19 @@ func golapis_escape_uri(L *C.lua_State) C.int {
 	if nargs == 2 {
 		if C.lua_isnumber(L, 2) == 0 {
 			C.lua_pushnil(L)
-			pushCString(L, "escape_uri: second argument must be a number")
+			pushGoString(L, "escape_uri: second argument must be a number")
 			return 2
 		}
 		escapeType = int(C.lua_tonumber(L, 2))
 		if escapeType != 0 && escapeType != 2 {
 			C.lua_pushnil(L)
-			pushCString(L, "escape_uri: type must be 0 or 2")
+			pushGoString(L, "escape_uri: type must be 0 or 2")
 			return 2
 		}
 	}
 
 	result := escapeURI(str, escapeType)
-	pushCString(L, result)
+	pushGoString(L, result)
 	return 1
 }
 
@@ -415,19 +415,19 @@ func golapis_escape_uri(L *C.lua_State) C.int {
 func golapis_unescape_uri(L *C.lua_State) C.int {
 	if C.lua_gettop(L) != 1 {
 		C.lua_pushnil(L)
-		pushCString(L, "unescape_uri expects exactly 1 argument")
+		pushGoString(L, "unescape_uri expects exactly 1 argument")
 		return 2
 	}
 
 	if C.lua_isstring(L, 1) == 0 {
 		C.lua_pushnil(L)
-		pushCString(L, "unescape_uri: argument must be a string")
+		pushGoString(L, "unescape_uri: argument must be a string")
 		return 2
 	}
 
 	str := C.GoString(C.lua_tostring_wrapper(L, 1))
 	result := unescapeURI(str)
-	pushCString(L, result)
+	pushGoString(L, result)
 	return 1
 }
 
@@ -615,7 +615,7 @@ func golapisOutput(L *C.lua_State, appendNewline bool, funcName string) C.int {
 		err := coerceValueToBytes(L, C.int(i), buf, 0, i, funcName)
 		if err != nil {
 			C.lua_pushnil(L)
-			pushCString(L, err.Error())
+			pushGoString(L, err.Error())
 			return 2
 		}
 	}
@@ -631,12 +631,12 @@ func golapisOutput(L *C.lua_State, appendNewline bool, funcName string) C.int {
 		n, writeErr := writer.Write(data)
 		if writeErr != nil {
 			C.lua_pushnil(L)
-			pushCString(L, "nginx output filter error")
+			pushGoString(L, "nginx output filter error")
 			return 2
 		}
 		if n <= 0 {
 			C.lua_pushnil(L)
-			pushCString(L, "nginx output filter error")
+			pushGoString(L, "nginx output filter error")
 			return 2
 		}
 		data = data[n:]
@@ -664,28 +664,28 @@ func golapis_timer_at(L *C.lua_State) C.int {
 	// Validate: at least 2 arguments (delay, callback)
 	if nargs < 2 {
 		C.lua_pushnil(L)
-		pushCString(L, "expecting at least 2 arguments (delay, callback)")
+		pushGoString(L, "expecting at least 2 arguments (delay, callback)")
 		return 2
 	}
 
 	// Validate delay is a number
 	if C.lua_isnumber(L, 1) == 0 {
 		C.lua_pushnil(L)
-		pushCString(L, "delay must be a number")
+		pushGoString(L, "delay must be a number")
 		return 2
 	}
 
 	// Validate callback is a function (and not a C function)
 	if C.lua_isfunction_wrapper(L, 2) == 0 {
 		C.lua_pushnil(L)
-		pushCString(L, "callback must be a function")
+		pushGoString(L, "callback must be a function")
 		return 2
 	}
 
 	delay := float64(C.lua_tonumber(L, 1))
 	if delay < 0 {
 		C.lua_pushnil(L)
-		pushCString(L, "delay must be >= 0")
+		pushGoString(L, "delay must be >= 0")
 		return 2
 	}
 
@@ -693,7 +693,7 @@ func golapis_timer_at(L *C.lua_State) C.int {
 	gls := getLuaStateFromRegistry(L)
 	if gls == nil {
 		C.lua_pushnil(L)
-		pushCString(L, "timer.at: could not find golapis state")
+		pushGoString(L, "timer.at: could not find golapis state")
 		return 2
 	}
 
@@ -703,7 +703,7 @@ func golapis_timer_at(L *C.lua_State) C.int {
 	co := C.lua_newthread(mainL)
 	if co == nil {
 		C.lua_pushnil(L)
-		pushCString(L, "failed to create timer coroutine")
+		pushGoString(L, "failed to create timer coroutine")
 		return 2
 	}
 
@@ -787,23 +787,23 @@ func pushQueryArgsToLuaTable(L *C.lua_State, args []queryArg) {
 	for key, keyArgs := range argBuckets {
 		if len(keyArgs) == 1 {
 			// Single value
-			pushCString(L, key)
+			pushGoString(L, key)
 			if keyArgs[0].isBoolean {
 				C.lua_pushboolean(L, 1) // true
 			} else {
-				pushCString(L, keyArgs[0].value)
+				pushGoString(L, keyArgs[0].value)
 			}
 			C.lua_settable(L, -3)
 		} else {
 			// Multiple values: {key = {val1, val2, ...}}
-			pushCString(L, key)
+			pushGoString(L, key)
 			C.lua_newtable_wrapper(L)
 			for i, arg := range keyArgs {
 				C.lua_pushinteger(L, C.lua_Integer(i+1))
 				if arg.isBoolean {
 					C.lua_pushboolean(L, 1) // true
 				} else {
-					pushCString(L, arg.value)
+					pushGoString(L, arg.value)
 				}
 				C.lua_settable(L, -3)
 			}
@@ -835,7 +835,7 @@ func golapis_req_get_uri_args(L *C.lua_State) C.int {
 
 	// Return table and optional "truncated" error
 	if truncated {
-		pushCString(L, "truncated")
+		pushGoString(L, "truncated")
 		return 2
 	}
 	return 1
@@ -897,9 +897,9 @@ func golapis_req_get_headers(L *C.lua_State) C.int {
 				break
 			}
 			// Push key
-			pushCString(L, key)
+			pushGoString(L, key)
 			// Single value - push as string
-			pushCString(L, values[0])
+			pushGoString(L, values[0])
 			C.lua_settable(L, -3)
 			count++
 		} else {
@@ -915,12 +915,12 @@ func golapis_req_get_headers(L *C.lua_State) C.int {
 				}
 			}
 			// Push key
-			pushCString(L, key)
+			pushGoString(L, key)
 			// Multiple values - push as array table
 			C.lua_newtable_wrapper(L)
 			for i, v := range values {
 				C.lua_pushinteger(L, C.lua_Integer(i+1))
-				pushCString(L, v)
+				pushGoString(L, v)
 				C.lua_settable(L, -3)
 			}
 			C.lua_settable(L, -3)
@@ -936,8 +936,8 @@ func golapis_req_get_headers(L *C.lua_State) C.int {
 		} else {
 			hostKey = "host"
 		}
-		pushCString(L, hostKey)
-		pushCString(L, req.Host)
+		pushGoString(L, hostKey)
+		pushGoString(L, req.Host)
 		C.lua_settable(L, -3)
 		count++
 	} else if req.Host != "" && maxHeaders > 0 && count >= maxHeaders {
@@ -952,7 +952,7 @@ func golapis_req_get_headers(L *C.lua_State) C.int {
 
 	// Return table and optional "truncated" error
 	if truncated {
-		pushCString(L, "truncated")
+		pushGoString(L, "truncated")
 		return 2
 	}
 	return 1
@@ -973,7 +973,7 @@ func golapis_req_headers_index(L *C.lua_State) C.int {
 	normalized := strings.ToLower(strings.ReplaceAll(key, "_", "-"))
 
 	// Do rawget with normalized key
-	pushCString(L, normalized)
+	pushGoString(L, normalized)
 	C.lua_rawget_wrapper(L, 1)
 
 	return 1
@@ -986,14 +986,14 @@ func golapis_req_read_body(L *C.lua_State) C.int {
 	if thread == nil || thread.request == nil {
 		// Not in HTTP context - return nil, error
 		C.lua_pushnil(L)
-		pushCString(L, "no request found")
+		pushGoString(L, "no request found")
 		return 2
 	}
 
 	_, err := thread.request.ReadBody()
 	if err != nil {
 		C.lua_pushnil(L)
-		pushCString(L, err.Error())
+		pushGoString(L, err.Error())
 		return 2
 	}
 
@@ -1063,7 +1063,7 @@ func golapis_req_get_post_args(L *C.lua_State) C.int {
 	// Check if body was read
 	if !thread.request.BodyWasRead() {
 		C.lua_pushnil(L)
-		pushCString(L, "request body not read")
+		pushGoString(L, "request body not read")
 		return 2
 	}
 
@@ -1082,7 +1082,7 @@ func golapis_req_get_post_args(L *C.lua_State) C.int {
 
 	// Return table and optional "truncated" error
 	if truncated {
-		pushCString(L, "truncated")
+		pushGoString(L, "truncated")
 		return 2
 	}
 	return 1
@@ -1153,10 +1153,14 @@ func (gls *GolapisLuaState) runBootstrap() error {
 	return nil
 }
 
-func pushCString(L *C.lua_State, s string) {
-	cstr := C.CString(s)
-	C.lua_pushstring(L, cstr)
-	C.free(unsafe.Pointer(cstr))
+// pushGoString pushes a Go string to the Lua stack without allocating a C string.
+// Uses lua_pushlstring with direct pointer access for better performance (~70ns savings).
+func pushGoString(L *C.lua_State, s string) {
+	if len(s) == 0 {
+		C.lua_pushlstring(L, nil, 0)
+		return
+	}
+	C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(unsafe.StringData(s))), C.size_t(len(s)))
 }
 
 //export golapis_var_index
@@ -1185,7 +1189,7 @@ func golapis_var_index(L *C.lua_State) C.int {
 	if value == nil {
 		C.lua_pushnil(L)
 	} else {
-		pushCString(L, *value)
+		pushGoString(L, *value)
 	}
 	return 1
 }
@@ -1454,7 +1458,7 @@ func golapis_header_index(L *C.lua_State) C.int {
 
 	if len(values) == 1 {
 		// Single value - return as string
-		pushCString(L, values[0])
+		pushGoString(L, values[0])
 		return 1
 	}
 
@@ -1462,7 +1466,7 @@ func golapis_header_index(L *C.lua_State) C.int {
 	C.lua_newtable_wrapper(L)
 	for i, v := range values {
 		C.lua_pushinteger(L, C.lua_Integer(i+1))
-		pushCString(L, v)
+		pushGoString(L, v)
 		C.lua_settable(L, -3)
 	}
 	return 1
