@@ -14,6 +14,7 @@ var ErrBodyTooLarge = errors.New("request body too large")
 type GolapisRequest struct {
 	Request         *http.Request // The underlying HTTP request
 	ResponseHeaders http.Header   // Accumulated response headers
+	ResponseStatus  int           // HTTP status code (0 = not set, defaults to 200)
 	HeadersSent     bool          // True after first body write
 	startTime       time.Time     // When request was created
 
@@ -41,7 +42,7 @@ func (r *GolapisRequest) StartTime() time.Time {
 	return r.startTime
 }
 
-// FlushHeaders writes accumulated response headers to the given ResponseWriter
+// FlushHeaders writes accumulated response headers and status to the given ResponseWriter
 // if they haven't been sent yet. Returns true if headers were flushed.
 func (r *GolapisRequest) FlushHeaders(w http.ResponseWriter) bool {
 	if r.HeadersSent {
@@ -52,6 +53,12 @@ func (r *GolapisRequest) FlushHeaders(w http.ResponseWriter) bool {
 			w.Header().Add(key, v)
 		}
 	}
+	// Write status code (default to 200 if not set)
+	status := r.ResponseStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
 	r.HeadersSent = true
 	return true
 }

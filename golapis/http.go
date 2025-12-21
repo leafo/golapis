@@ -80,7 +80,12 @@ func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 		// Apply response headers if not already sent (handles no-body case)
 		req.FlushHeaders(w)
 
-		logHTTPRequest(r, req.StartTime(), http.StatusOK, 0)
+		// Log with actual status code
+		status := req.ResponseStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		logHTTPRequest(r, req.StartTime(), status, 0)
 	})
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))

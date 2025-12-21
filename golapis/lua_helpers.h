@@ -5,6 +5,7 @@
 #include "../luajit/src/lauxlib.h"
 #include "../luajit/src/lualib.h"
 #include <stdlib.h>
+#include <string.h>
 
 static void lua_newtable_wrapper(lua_State *L) {
     lua_newtable(L);

@@ -24,6 +24,8 @@ extern int golapis_now(lua_State *L);
 extern int golapis_req_start_time(lua_State *L);
 extern int golapis_escape_uri(lua_State *L);
 extern int golapis_unescape_uri(lua_State *L);
+extern int golapis_status_get(lua_State *L);
+extern int golapis_status_set(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -132,6 +134,48 @@ static int c_update_time_noop(lua_State *L) {
     return 0;
 }
 
+// Main table __index metamethod
+// Stack: [golapis_table, key]
+static int c_main_index_wrapper(lua_State *L) {
+    if (lua_type(L, 2) == LUA_TSTRING) {
+        const char *key = lua_tostring(L, 2);
+        if (strcmp(key, "status") == 0) {
+            return golapis_status_get(L);
+        }
+    }
+    // Fall through: rawget the key from the table
+    lua_rawget(L, 1);
+    return 1;
+}
+
+// Main table __newindex metamethod
+// Stack: [golapis_table, key, value]
+static int c_main_newindex_wrapper(lua_State *L) {
+    if (lua_type(L, 2) == LUA_TSTRING) {
+        const char *key = lua_tostring(L, 2);
+        if (strcmp(key, "status") == 0) {
+            int result = golapis_status_set(L);
+            if (result < 0) {
+                return luaL_error(L, "%s", lua_tostring(L, -1));
+            }
+            return result;
+        }
+    }
+    // Fall through: rawset the key/value in the table
+    lua_rawset(L, 1);
+    return 0;
+}
+
+// Initialize the main golapis metatable in the registry (call once during setup)
+static void init_main_metatable(lua_State *L) {
+    luaL_newmetatable(L, "golapis.main");              // Create and register metatable
+    lua_pushcfunction(L, c_main_index_wrapper);
+    lua_setfield(L, -2, "__index");                    // metatable.__index = handler
+    lua_pushcfunction(L, c_main_newindex_wrapper);
+    lua_setfield(L, -2, "__newindex");                 // metatable.__newindex = handler
+    lua_pop(L, 1);                                     // Pop metatable (stored in registry)
+}
+
 static int setup_golapis_global(lua_State *L) {
     lua_newtable(L);                    // Create new table `golapis`
 
@@ -219,6 +263,11 @@ static int setup_golapis_global(lua_State *L) {
 
     // Initialize cached metatables
     init_headers_metatable(L);
+    init_main_metatable(L);
+
+    // Apply metatable to golapis table (for status magic key)
+    luaL_getmetatable(L, "golapis.main");  // Push cached metatable from registry
+    lua_setmetatable(L, -2);               // setmetatable(golapis, metatable)
 
     lua_pushvalue(L, -1);               // Duplicate table for registry ref
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -1470,4 +1519,64 @@ func golapis_header_index(L *C.lua_State) C.int {
 		C.lua_settable(L, -3)
 	}
 	return 1
+}
+
+//export golapis_status_get
+func golapis_status_get(L *C.lua_State) C.int {
+	// Stack: [golapis_table, "status"]
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		// Not in HTTP context - return 0 (ngx behavior)
+		C.lua_pushinteger(L, 0)
+		return 1
+	}
+
+	C.lua_pushinteger(L, C.lua_Integer(thread.request.ResponseStatus))
+	return 1
+}
+
+//export golapis_status_set
+func golapis_status_set(L *C.lua_State) C.int {
+	// Stack: [golapis_table, "status", value]
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		pushGoString(L, "golapis.status can only be set in HTTP request context")
+		return -1
+	}
+
+	// Check if headers already sent
+	if thread.request.HeadersSent {
+		pushGoString(L, "attempt to set status after response headers have been sent")
+		return -1
+	}
+
+	// Get value from stack position 3
+	var status int
+
+	switch C.lua_type(L, 3) {
+	case C.LUA_TNUMBER:
+		status = int(C.lua_tonumber(L, 3))
+	case C.LUA_TSTRING:
+		// Auto-convert string to number
+		statusStr := C.GoString(C.lua_tostring_wrapper(L, 3))
+		var err error
+		status, err = strconv.Atoi(statusStr)
+		if err != nil {
+			pushGoString(L, fmt.Sprintf("invalid status code: %s", statusStr))
+			return -1
+		}
+	default:
+		typeName := C.GoString(C.lua_typename(L, C.lua_type(L, 3)))
+		pushGoString(L, fmt.Sprintf("status must be a number or string (got %s)", typeName))
+		return -1
+	}
+
+	// Validate range (RFC 7230: 3-digit integer)
+	if status < 100 || status > 999 {
+		pushGoString(L, fmt.Sprintf("invalid status code: %d (must be 100-999)", status))
+		return -1
+	}
+
+	thread.request.ResponseStatus = status
+	return 0
 }

@@ -119,6 +119,7 @@ The `golapis` global table provides an ngx-compatible API. Functions use the sam
 | `golapis.timer.at(delay, cb, ...)` | Schedule callback after delay |
 | `golapis.var.*` | Request variables (read-only, HTTP mode only) |
 | `golapis.header.*` | Response headers (write before first output) |
+| `golapis.status` | HTTP response status code (read/write, set before first output) |
 | `golapis.ctx` | Per-request Lua table for storing data |
 
 ### golapis.var Variables
