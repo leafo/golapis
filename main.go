@@ -8,10 +8,25 @@ import (
 	"golapis/golapis"
 )
 
+var (
+	version   = "dev"
+	gitCommit = "unknown"
+	buildDate = "unknown"
+)
+
 func main() {
 	httpFlag := flag.Bool("http", false, "Start as HTTP server")
 	portFlag := flag.String("port", "8080", "Port for HTTP server")
+	versionFlag := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("golapis %s\n", version)
+		fmt.Printf("  commit: %s\n", gitCommit)
+		fmt.Printf("  built:  %s\n", buildDate)
+		fmt.Printf("  luajit: %s\n", golapis.LuaJITVersion())
+		os.Exit(0)
+	}
 
 	args := flag.Args()
 	if len(args) < 1 {

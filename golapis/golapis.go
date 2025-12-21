@@ -7,9 +7,14 @@ package golapis
 #include "../luajit/src/lua.h"
 #include "../luajit/src/lauxlib.h"
 #include "../luajit/src/lualib.h"
+#include "../luajit/src/luajit.h"
 #include "lua_helpers.h"
 #include <stdlib.h>
 #include <stdio.h>
+
+static const char* get_luajit_version() {
+    return LUAJIT_VERSION;
+}
 
 static int panic_handler(lua_State *L) {
     const char *msg = lua_tostring(L, -1);
@@ -54,6 +59,11 @@ import (
 
 //go:embed moonscript_bootstrap.lua
 var moonscriptBootstrap string
+
+// LuaJITVersion returns the version string of the embedded LuaJIT library
+func LuaJITVersion() string {
+	return C.GoString(C.get_luajit_version())
+}
 
 // GolapisLuaState represents a Lua state with golapis functions initialized
 type GolapisLuaState struct {
