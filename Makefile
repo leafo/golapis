@@ -1,4 +1,4 @@
-.PHONY: build build-debug clean luajit test
+.PHONY: build build-debug clean luajit test install
 
 BINARY_NAME=golapis
 
@@ -26,3 +26,7 @@ clean:
 test: luajit
 	@echo "Running tests..."
 	CGO_ENABLED=1 go test ./golapis -v
+
+install: luajit
+	@echo "Installing $(BINARY_NAME)..."
+	CGO_ENABLED=1 go install -ldflags="-s -w" .
