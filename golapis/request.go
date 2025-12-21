@@ -1,12 +1,20 @@
 package golapis
 
-import "net/http"
+import (
+	"io"
+	"net/http"
+)
 
 // GolapisRequest wraps an HTTP request and holds request processing state
 type GolapisRequest struct {
 	Request         *http.Request // The underlying HTTP request
 	ResponseHeaders http.Header   // Accumulated response headers
 	HeadersSent     bool          // True after first body write
+
+	// Body caching (body can only be read once from Go's Request.Body)
+	bodyRead bool   // Whether body has been read
+	bodyData []byte // Cached body content
+	bodyErr  error  // Error from reading body (if any)
 }
 
 // NewGolapisRequest creates a new GolapisRequest from an http.Request
@@ -53,4 +61,33 @@ func (r *GolapisRequest) WrapResponseWriter(w http.ResponseWriter) *headerFlushi
 		ResponseWriter: w,
 		request:        r,
 	}
+}
+
+// ReadBody reads and caches the request body. Safe to call multiple times.
+// Returns the cached body data and any error from the initial read.
+func (r *GolapisRequest) ReadBody() ([]byte, error) {
+	if r.bodyRead {
+		return r.bodyData, r.bodyErr
+	}
+
+	r.bodyRead = true
+	if r.Request.Body == nil {
+		r.bodyData = nil
+		r.bodyErr = nil
+		return nil, nil
+	}
+
+	r.bodyData, r.bodyErr = io.ReadAll(r.Request.Body)
+	r.Request.Body.Close()
+	return r.bodyData, r.bodyErr
+}
+
+// BodyWasRead returns true if ReadBody has been called
+func (r *GolapisRequest) BodyWasRead() bool {
+	return r.bodyRead
+}
+
+// GetBody returns the cached body data (nil if not yet read)
+func (r *GolapisRequest) GetBody() []byte {
+	return r.bodyData
 }

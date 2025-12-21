@@ -11,6 +11,8 @@ extern int golapis_say(lua_State *L);
 extern int golapis_req_get_uri_args(lua_State *L);
 extern int golapis_req_get_headers(lua_State *L);
 extern int golapis_req_headers_index(lua_State *L);
+extern int golapis_req_read_body(lua_State *L);
+extern int golapis_req_get_post_args(lua_State *L);
 extern int golapis_timer_at(lua_State *L);
 extern int golapis_debug_cancel_timers(lua_State *L);
 extern int golapis_debug_pending_timer_count(lua_State *L);
@@ -44,6 +46,14 @@ static int c_req_get_headers_wrapper(lua_State *L) {
 
 static int c_req_headers_index_wrapper(lua_State *L) {
     return golapis_req_headers_index(L);
+}
+
+static int c_req_read_body_wrapper(lua_State *L) {
+    return golapis_req_read_body(L);
+}
+
+static int c_req_get_post_args_wrapper(lua_State *L) {
+    return golapis_req_get_post_args(L);
 }
 
 // Initialize the headers metatable in the registry (call once during setup)
@@ -122,6 +132,10 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "get_uri_args");
     lua_pushcfunction(L, c_req_get_headers_wrapper);
     lua_setfield(L, -2, "get_headers");
+    lua_pushcfunction(L, c_req_read_body_wrapper);
+    lua_setfield(L, -2, "read_body");
+    lua_pushcfunction(L, c_req_get_post_args_wrapper);
+    lua_setfield(L, -2, "get_post_args");
     lua_setfield(L, -2, "req");         // Add req table to `golapis`
 
     // Create timer table
@@ -627,6 +641,48 @@ func golapis_timer_at(L *C.lua_State) C.int {
 	return 1
 }
 
+// pushQueryArgsToLuaTable creates a Lua table from parsed query args.
+// Groups multiple values for the same key into arrays.
+// Args with empty keys are always skipped.
+func pushQueryArgsToLuaTable(L *C.lua_State, args []queryArg) {
+	C.lua_newtable_wrapper(L)
+
+	argBuckets := make(map[string][]queryArg)
+	for _, arg := range args {
+		if arg.key == "" {
+			continue
+		}
+		argBuckets[arg.key] = append(argBuckets[arg.key], arg)
+	}
+
+	for key, keyArgs := range argBuckets {
+		if len(keyArgs) == 1 {
+			// Single value
+			pushCString(L, key)
+			if keyArgs[0].isBoolean {
+				C.lua_pushboolean(L, 1) // true
+			} else {
+				pushCString(L, keyArgs[0].value)
+			}
+			C.lua_settable(L, -3)
+		} else {
+			// Multiple values: {key = {val1, val2, ...}}
+			pushCString(L, key)
+			C.lua_newtable_wrapper(L)
+			for i, arg := range keyArgs {
+				C.lua_pushinteger(L, C.lua_Integer(i+1))
+				if arg.isBoolean {
+					C.lua_pushboolean(L, 1) // true
+				} else {
+					pushCString(L, arg.value)
+				}
+				C.lua_settable(L, -3)
+			}
+			C.lua_settable(L, -3)
+		}
+	}
+}
+
 //export golapis_req_get_uri_args
 func golapis_req_get_uri_args(L *C.lua_State) C.int {
 	// Get optional max argument (default 100, like nginx)
@@ -644,44 +700,15 @@ func golapis_req_get_uri_args(L *C.lua_State) C.int {
 	}
 
 	// Parse query parameters with nginx-lua compatible behavior
-	queryArgs := parseQueryString(thread.request.Request.URL.RawQuery)
+	queryArgs, truncated := parseQueryString(thread.request.Request.URL.RawQuery, max)
 
-	// Create result table
-	C.lua_newtable_wrapper(L)
+	pushQueryArgsToLuaTable(L, queryArgs)
 
-	count := 0
-	for key, args := range queryArgs {
-		if count >= max {
-			break
-		}
-		count++
-
-		if len(args) == 1 {
-			// Single value
-			pushCString(L, key)
-			if args[0].isBoolean {
-				C.lua_pushboolean(L, 1) // true
-			} else {
-				pushCString(L, args[0].value)
-			}
-			C.lua_settable(L, -3)
-		} else {
-			// Multiple values: {key = {val1, val2, ...}}
-			pushCString(L, key)
-			C.lua_newtable_wrapper(L)
-			for i, arg := range args {
-				C.lua_pushinteger(L, C.lua_Integer(i+1))
-				if arg.isBoolean {
-					C.lua_pushboolean(L, 1) // true
-				} else {
-					pushCString(L, arg.value)
-				}
-				C.lua_settable(L, -3)
-			}
-			C.lua_settable(L, -3)
-		}
+	// Return table and optional "truncated" error
+	if truncated {
+		pushCString(L, "truncated")
+		return 2
 	}
-
 	return 1
 }
 
@@ -820,6 +847,73 @@ func golapis_req_headers_index(L *C.lua_State) C.int {
 	pushCString(L, normalized)
 	C.lua_rawget_wrapper(L, 1)
 
+	return 1
+}
+
+//export golapis_req_read_body
+func golapis_req_read_body(L *C.lua_State) C.int {
+	// Read and cache the request body (required before calling get_post_args)
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		// Not in HTTP context - return nil, error
+		C.lua_pushnil(L)
+		pushCString(L, "no request found")
+		return 2
+	}
+
+	_, err := thread.request.ReadBody()
+	if err != nil {
+		C.lua_pushnil(L)
+		pushCString(L, err.Error())
+		return 2
+	}
+
+	// Success - return nothing (nginx-lua compatible)
+	return 0
+}
+
+//export golapis_req_get_post_args
+func golapis_req_get_post_args(L *C.lua_State) C.int {
+	// Get optional max_args argument (default 100, like nginx)
+	// 0 means unlimited
+	maxArgs := 100
+	if C.lua_gettop(L) >= 1 && C.lua_isnumber(L, 1) != 0 {
+		maxArgs = int(C.lua_tonumber(L, 1))
+	}
+
+	// Get current thread's HTTP request
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		// Not in HTTP context - return nil
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	// Check if body was read
+	if !thread.request.BodyWasRead() {
+		C.lua_pushnil(L)
+		pushCString(L, "request body not read")
+		return 2
+	}
+
+	// Get the cached body
+	bodyData := thread.request.GetBody()
+	if bodyData == nil {
+		// Empty body - return empty table
+		C.lua_newtable_wrapper(L)
+		return 1
+	}
+
+	// Parse body as application/x-www-form-urlencoded using existing parser
+	postArgs, truncated := parseQueryString(string(bodyData), maxArgs)
+
+	pushQueryArgsToLuaTable(L, postArgs)
+
+	// Return table and optional "truncated" error
+	if truncated {
+		pushCString(L, "truncated")
+		return 2
+	}
 	return 1
 }
 
