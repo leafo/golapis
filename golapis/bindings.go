@@ -22,6 +22,8 @@ extern int golapis_header_index(lua_State *L);
 extern int golapis_header_newindex(lua_State *L);
 extern int golapis_now(lua_State *L);
 extern int golapis_req_start_time(lua_State *L);
+extern int golapis_escape_uri(lua_State *L);
+extern int golapis_unescape_uri(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -116,6 +118,14 @@ static int c_now_wrapper(lua_State *L) {
     return golapis_now(L);
 }
 
+static int c_escape_uri_wrapper(lua_State *L) {
+    return golapis_escape_uri(L);
+}
+
+static int c_unescape_uri_wrapper(lua_State *L) {
+    return golapis_unescape_uri(L);
+}
+
 // No-op - Go's time.Now() is already fast (VDSO). Exists for API compatibility.
 static int c_update_time_noop(lua_State *L) {
     (void)L;
@@ -142,6 +152,12 @@ static int setup_golapis_global(lua_State *L) {
 
     lua_pushcfunction(L, c_say_wrapper);
     lua_setfield(L, -2, "say");
+
+    lua_pushcfunction(L, c_escape_uri_wrapper);
+    lua_setfield(L, -2, "escape_uri");
+
+    lua_pushcfunction(L, c_unescape_uri_wrapper);
+    lua_setfield(L, -2, "unescape_uri");
 
     // Register golapis.null as lightuserdata(NULL)
     lua_pushlightuserdata(L, NULL);
@@ -354,6 +370,64 @@ func golapis_req_start_time(L *C.lua_State) C.int {
 
 	startTime := float64(thread.request.StartTime().UnixNano()) / 1e9
 	C.lua_pushnumber(L, C.lua_Number(startTime))
+	return 1
+}
+
+//export golapis_escape_uri
+func golapis_escape_uri(L *C.lua_State) C.int {
+	nargs := int(C.lua_gettop(L))
+	if nargs < 1 || nargs > 2 {
+		C.lua_pushnil(L)
+		pushCString(L, "escape_uri expects 1 or 2 arguments")
+		return 2
+	}
+
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushCString(L, "escape_uri: first argument must be a string")
+		return 2
+	}
+
+	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+
+	// Default type is 2
+	escapeType := 2
+	if nargs == 2 {
+		if C.lua_isnumber(L, 2) == 0 {
+			C.lua_pushnil(L)
+			pushCString(L, "escape_uri: second argument must be a number")
+			return 2
+		}
+		escapeType = int(C.lua_tonumber(L, 2))
+		if escapeType != 0 && escapeType != 2 {
+			C.lua_pushnil(L)
+			pushCString(L, "escape_uri: type must be 0 or 2")
+			return 2
+		}
+	}
+
+	result := escapeURI(str, escapeType)
+	pushCString(L, result)
+	return 1
+}
+
+//export golapis_unescape_uri
+func golapis_unescape_uri(L *C.lua_State) C.int {
+	if C.lua_gettop(L) != 1 {
+		C.lua_pushnil(L)
+		pushCString(L, "unescape_uri expects exactly 1 argument")
+		return 2
+	}
+
+	if C.lua_isstring(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushCString(L, "unescape_uri: argument must be a string")
+		return 2
+	}
+
+	str := C.GoString(C.lua_tostring_wrapper(L, 1))
+	result := unescapeURI(str)
+	pushCString(L, result)
 	return 1
 }
 
