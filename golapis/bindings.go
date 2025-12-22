@@ -33,6 +33,7 @@ extern int golapis_hmac_sha1(lua_State *L);
 extern int golapis_encode_base64(lua_State *L);
 extern int golapis_decode_base64(lua_State *L);
 extern int golapis_decode_base64mime(lua_State *L);
+extern int golapis_exit(lua_State *L);
 
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
@@ -163,6 +164,16 @@ static int c_decode_base64mime_wrapper(lua_State *L) {
     return golapis_decode_base64mime(L);
 }
 
+static int c_exit_wrapper(lua_State *L) {
+    int result = golapis_exit(L);
+    if (result < 0) {
+        // Error - message is on stack
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    // Success - yield from C (not Go, since yield uses longjmp)
+    return lua_yield(L, 0);
+}
+
 // No-op - Go's time.Now() is already fast (VDSO). Exists for API compatibility.
 static int c_update_time_noop(lua_State *L) {
     (void)L;
@@ -232,6 +243,9 @@ static int setup_golapis_global(lua_State *L) {
     lua_pushcfunction(L, c_say_wrapper);
     lua_setfield(L, -2, "say");
 
+    lua_pushcfunction(L, c_exit_wrapper);
+    lua_setfield(L, -2, "exit");
+
     lua_pushcfunction(L, c_escape_uri_wrapper);
     lua_setfield(L, -2, "escape_uri");
 
@@ -262,6 +276,44 @@ static int setup_golapis_global(lua_State *L) {
     // Register golapis.null as lightuserdata(NULL)
     lua_pushlightuserdata(L, NULL);
     lua_setfield(L, -2, "null");
+
+    // HTTP status codes (ngx.HTTP_* equivalents)
+    lua_pushinteger(L, 200);
+    lua_setfield(L, -2, "HTTP_OK");
+    lua_pushinteger(L, 201);
+    lua_setfield(L, -2, "HTTP_CREATED");
+    lua_pushinteger(L, 204);
+    lua_setfield(L, -2, "HTTP_NO_CONTENT");
+    lua_pushinteger(L, 301);
+    lua_setfield(L, -2, "HTTP_MOVED_PERMANENTLY");
+    lua_pushinteger(L, 302);
+    lua_setfield(L, -2, "HTTP_MOVED_TEMPORARILY");
+    lua_pushinteger(L, 304);
+    lua_setfield(L, -2, "HTTP_NOT_MODIFIED");
+    lua_pushinteger(L, 400);
+    lua_setfield(L, -2, "HTTP_BAD_REQUEST");
+    lua_pushinteger(L, 401);
+    lua_setfield(L, -2, "HTTP_UNAUTHORIZED");
+    lua_pushinteger(L, 403);
+    lua_setfield(L, -2, "HTTP_FORBIDDEN");
+    lua_pushinteger(L, 404);
+    lua_setfield(L, -2, "HTTP_NOT_FOUND");
+    lua_pushinteger(L, 405);
+    lua_setfield(L, -2, "HTTP_NOT_ALLOWED");
+    lua_pushinteger(L, 500);
+    lua_setfield(L, -2, "HTTP_INTERNAL_SERVER_ERROR");
+    lua_pushinteger(L, 502);
+    lua_setfield(L, -2, "HTTP_BAD_GATEWAY");
+    lua_pushinteger(L, 503);
+    lua_setfield(L, -2, "HTTP_SERVICE_UNAVAILABLE");
+    lua_pushinteger(L, 504);
+    lua_setfield(L, -2, "HTTP_GATEWAY_TIMEOUT");
+
+    // Special codes (ngx.OK, ngx.ERROR equivalents)
+    lua_pushinteger(L, 0);
+    lua_setfield(L, -2, "OK");
+    lua_pushinteger(L, -1);
+    lua_setfield(L, -2, "ERROR");
 
     // Create http table
     lua_newtable(L);
@@ -461,6 +513,51 @@ func golapis_sleep(L *C.lua_State) C.int {
 
 	// Yield with 0 values (nginx-lua pattern)
 	return C.lua_yield_wrapper(L, 0)
+}
+
+//export golapis_exit
+func golapis_exit(L *C.lua_State) C.int {
+	// Get optional status code (default 0 = 200 OK)
+	status := 0
+	if C.lua_gettop(L) >= 1 {
+		if C.lua_isnumber(L, 1) == 0 {
+			pushGoString(L, "exit status must be a number")
+			return -1 // Signal error to C wrapper
+		}
+		status = int(C.lua_tonumber(L, 1))
+	}
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		pushGoString(L, "exit: could not find thread context")
+		return -1
+	}
+
+	// Only allow in HTTP request context
+	if thread.request == nil {
+		pushGoString(L, "exit can only be called from HTTP request context")
+		return -1
+	}
+
+	// Validate status (0 means default, or 100-599)
+	if status != 0 && (status < 100 || status > 599) {
+		pushGoString(L, fmt.Sprintf("invalid exit status: %d", status))
+		return -1
+	}
+
+	// Set response status if headers not sent
+	if !thread.request.HeadersSent {
+		if status >= 100 && status <= 599 {
+			thread.request.ResponseStatus = status
+		}
+	}
+
+	// Store exit state on the thread and signal success
+	// The C wrapper will do the actual yield
+	thread.exited = true
+	thread.exitCode = status
+
+	return 0 // Success - C wrapper will yield
 }
 
 //export golapis_now

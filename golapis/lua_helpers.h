@@ -51,6 +51,14 @@ static int lua_isfunction_wrapper(lua_State *L, int idx) {
     return lua_isfunction(L, idx);
 }
 
+static int lua_isboolean_wrapper(lua_State *L, int idx) {
+    return lua_isboolean(L, idx);
+}
+
+static int lua_toboolean_wrapper(lua_State *L, int idx) {
+    return lua_toboolean(L, idx);
+}
+
 // For table iteration
 static int lua_next_wrapper(lua_State *L, int idx) {
     return lua_next(L, idx);
@@ -76,6 +84,11 @@ static void setup_headers_metatable(lua_State *L) {
 // For raw table access (bypasses metamethods)
 static void lua_rawget_wrapper(lua_State *L, int idx) {
     lua_rawget(L, idx);
+}
+
+// Wrapper for luaL_error since CGo can't call variadic functions
+static int luaL_error_str(lua_State *L, const char *msg) {
+    return luaL_error(L, "%s", msg);
 }
 
 // Get traceback from a coroutine error

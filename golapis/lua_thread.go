@@ -26,6 +26,7 @@ const (
 	ThreadRunning
 	ThreadYielded
 	ThreadDead
+	ThreadExited // terminated via golapis.exit()
 )
 
 // LuaThread represents the execution of Lua code in a coroutine
@@ -37,6 +38,10 @@ type LuaThread struct {
 	responseChan chan *StateResponse // channel to send final response when thread completes
 	outputWriter io.Writer           // per-request output destination (e.g., http.ResponseWriter)
 	request      *GolapisRequest     // Request context (nil in CLI mode)
+
+	// Exit state (set by golapis.exit())
+	exited   bool // true if golapis.exit() was called
+	exitCode int  // HTTP status code from exit()
 }
 
 // newThread creates a new LuaThread from the function currently on top of the stack (internal)
@@ -95,11 +100,19 @@ func (t *LuaThread) clearCtx() {
 	C.lua_pop_wrapper(L, 1) // pop golapis table
 }
 
+// checkExitYield checks if the yield was caused by golapis.exit()
+// The exit state is stored on the thread by golapis_exit() before yielding.
+// Returns true if this was an exit yield, false otherwise.
+func (t *LuaThread) checkExitYield() bool {
+	// Exit state is set directly on thread by golapis_exit
+	return t.exited
+}
+
 // resume starts or continues execution of the thread (internal)
 // Pass nil or empty slice when no values are needed
 func (t *LuaThread) resume(values []interface{}) error {
-	if t.status == ThreadDead {
-		return fmt.Errorf("cannot resume dead thread")
+	if t.status == ThreadDead || t.status == ThreadExited {
+		return fmt.Errorf("cannot resume dead or exited thread")
 	}
 
 	if debugEnabled {
@@ -172,9 +185,17 @@ func (t *LuaThread) resume(values []interface{}) error {
 		}
 		return nil
 	case 1: // LUA_YIELD
-		t.status = ThreadYielded
-		if debugEnabled {
-			debugLog("thread.resume: co=%p yielded", t.co)
+		// Check if this is an exit yield (golapis.exit() was called)
+		if t.checkExitYield() {
+			t.status = ThreadExited
+			if debugEnabled {
+				debugLog("thread.resume: co=%p exited with code %d", t.co, t.exitCode)
+			}
+		} else {
+			t.status = ThreadYielded
+			if debugEnabled {
+				debugLog("thread.resume: co=%p yielded", t.co)
+			}
 		}
 		return nil
 	default:

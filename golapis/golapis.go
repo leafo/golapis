@@ -310,8 +310,8 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 		return &StateResponse{Error: err}
 	}
 
-	// If thread is dead, clean up and respond immediately
-	if thread.status == ThreadDead {
+	// If thread is dead or exited, clean up and respond immediately
+	if thread.status == ThreadDead || thread.status == ThreadExited {
 		thread.close()
 		return &StateResponse{Thread: thread}
 	}
@@ -350,8 +350,8 @@ func (gls *GolapisLuaState) handleRunEntryPoint(event *StateEvent) *StateRespons
 		return &StateResponse{Error: err}
 	}
 
-	// If thread is dead, clean up and respond immediately
-	if thread.status == ThreadDead {
+	// If thread is dead or exited, clean up and respond immediately
+	if thread.status == ThreadDead || thread.status == ThreadExited {
 		thread.close()
 		return &StateResponse{Thread: thread}
 	}
@@ -382,8 +382,8 @@ func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
 		return &StateResponse{Error: err}
 	}
 
-	// If thread is dead, clean up and respond immediately
-	if thread.status == ThreadDead {
+	// If thread is dead or exited, clean up and respond immediately
+	if thread.status == ThreadDead || thread.status == ThreadExited {
 		thread.close()
 		return &StateResponse{Thread: thread}
 	}
@@ -407,8 +407,8 @@ func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse
 		return nil
 	}
 
-	if thread.status == ThreadDead {
-		// Thread completed - send success to the original caller
+	if thread.status == ThreadDead || thread.status == ThreadExited {
+		// Thread completed or exited - send success to the original caller
 		if thread.responseChan != nil {
 			thread.responseChan <- &StateResponse{Thread: thread}
 		}
