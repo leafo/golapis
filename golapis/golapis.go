@@ -126,6 +126,7 @@ type StateEvent struct {
 	// For ResumeThread (async completion)
 	Thread     *LuaThread
 	ReturnVals []interface{}
+	OnResume   func(event *StateEvent) // Called on main thread before resuming Lua (for state mutation)
 
 	// For EventTimerFire
 	Timer     *PendingTimer // timer that fired
@@ -397,6 +398,11 @@ func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
 // Returns nil because response is sent via thread.responseChan
 func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse {
 	thread := event.Thread
+
+	// Execute callback on main thread before resuming Lua
+	if event.OnResume != nil {
+		event.OnResume(event)
+	}
 
 	if err := thread.resume(event.ReturnVals); err != nil {
 		// Send error to the original caller

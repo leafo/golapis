@@ -86,6 +86,11 @@ static void lua_rawget_wrapper(lua_State *L, int idx) {
     lua_rawget(L, idx);
 }
 
+// Get metatable from registry by name
+static void luaL_getmetatable_wrapper(lua_State *L, const char *name) {
+    luaL_getmetatable(L, name);
+}
+
 // Wrapper for luaL_error since CGo can't call variadic functions
 static int luaL_error_str(lua_State *L, const char *msg) {
     return luaL_error(L, "%s", msg);

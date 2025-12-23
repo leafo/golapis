@@ -35,6 +35,16 @@ extern int golapis_decode_base64(lua_State *L);
 extern int golapis_decode_base64mime(lua_State *L);
 extern int golapis_exit(lua_State *L);
 
+// UDP socket functions
+extern int golapis_socket_udp_new(lua_State *L);
+extern int golapis_udp_setpeername(lua_State *L);
+extern int golapis_udp_send(lua_State *L);
+extern int golapis_udp_receive(lua_State *L);
+extern int golapis_udp_settimeout(lua_State *L);
+extern int golapis_udp_close(lua_State *L);
+extern int golapis_udp_bind(lua_State *L);
+extern int golapis_udp_gc(lua_State *L);
+
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
 }
@@ -180,6 +190,39 @@ static int c_update_time_noop(lua_State *L) {
     return 0;
 }
 
+// UDP socket wrappers
+static int c_socket_udp_new_wrapper(lua_State *L) {
+    return golapis_socket_udp_new(L);
+}
+
+static int c_udp_setpeername_wrapper(lua_State *L) {
+    return golapis_udp_setpeername(L);
+}
+
+static int c_udp_send_wrapper(lua_State *L) {
+    return golapis_udp_send(L);
+}
+
+static int c_udp_receive_wrapper(lua_State *L) {
+    return golapis_udp_receive(L);
+}
+
+static int c_udp_settimeout_wrapper(lua_State *L) {
+    return golapis_udp_settimeout(L);
+}
+
+static int c_udp_close_wrapper(lua_State *L) {
+    return golapis_udp_close(L);
+}
+
+static int c_udp_bind_wrapper(lua_State *L) {
+    return golapis_udp_bind(L);
+}
+
+static int c_udp_gc_wrapper(lua_State *L) {
+    return golapis_udp_gc(L);
+}
+
 // Main table __index metamethod
 // Stack: [golapis_table, key]
 static int c_main_index_wrapper(lua_State *L) {
@@ -220,6 +263,33 @@ static void init_main_metatable(lua_State *L) {
     lua_pushcfunction(L, c_main_newindex_wrapper);
     lua_setfield(L, -2, "__newindex");                 // metatable.__newindex = handler
     lua_pop(L, 1);                                     // Pop metatable (stored in registry)
+}
+
+// Initialize the UDP socket metatable in the registry (call once during setup)
+static void init_udp_socket_metatable(lua_State *L) {
+    luaL_newmetatable(L, "golapis.socket.udp");
+
+    // Create methods table for __index
+    lua_newtable(L);
+    lua_pushcfunction(L, c_udp_setpeername_wrapper);
+    lua_setfield(L, -2, "setpeername");
+    lua_pushcfunction(L, c_udp_send_wrapper);
+    lua_setfield(L, -2, "send");
+    lua_pushcfunction(L, c_udp_receive_wrapper);
+    lua_setfield(L, -2, "receive");
+    lua_pushcfunction(L, c_udp_settimeout_wrapper);
+    lua_setfield(L, -2, "settimeout");
+    lua_pushcfunction(L, c_udp_close_wrapper);
+    lua_setfield(L, -2, "close");
+    lua_pushcfunction(L, c_udp_bind_wrapper);
+    lua_setfield(L, -2, "bind");
+    lua_setfield(L, -2, "__index");  // metatable.__index = methods table
+
+    // GC metamethod
+    lua_pushcfunction(L, c_udp_gc_wrapper);
+    lua_setfield(L, -2, "__gc");
+
+    lua_pop(L, 1);  // Pop metatable (stored in registry)
 }
 
 static int setup_golapis_global(lua_State *L) {
@@ -369,9 +439,16 @@ static int setup_golapis_global(lua_State *L) {
     lua_setmetatable(L, -2);            // setmetatable(header, metatable)
     lua_setfield(L, -2, "header");      // golapis.header = header
 
+    // Create socket table (for TCP/UDP cosockets)
+    lua_newtable(L);
+    lua_pushcfunction(L, c_socket_udp_new_wrapper);
+    lua_setfield(L, -2, "udp");
+    lua_setfield(L, -2, "socket");      // golapis.socket = { udp = fn }
+
     // Initialize cached metatables
     init_headers_metatable(L);
     init_main_metatable(L);
+    init_udp_socket_metatable(L);
 
     // Apply metatable to golapis table (for status magic key)
     luaL_getmetatable(L, "golapis.main");  // Push cached metatable from registry
