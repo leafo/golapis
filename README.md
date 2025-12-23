@@ -124,6 +124,7 @@ The `golapis` global table provides an ngx-compatible API. Functions use the sam
 | `golapis.req.get_post_args([max])` | Parse POST body as form-urlencoded |
 | `golapis.req.get_headers([max], [raw])` | Get request headers as table |
 | `golapis.timer.at(delay, cb, ...)` | Schedule callback after delay |
+| `golapis.socket.udp()` | Create UDP cosocket (see below) |
 | `golapis.var.*` | Request variables (read-only, HTTP mode only) |
 | `golapis.header.*` | Response headers (write before first output) |
 | `golapis.status` | HTTP response status code (read/write, set before first output) |
@@ -155,6 +156,21 @@ golapis.say("Slept for 1 second")
 local body, status, headers = golapis.http.request("https://example.com")
 golapis.say("Status: ", status)
 ```
+
+### golapis.socket.udp
+
+UDP cosocket API compatible with `ngx.socket.udp`.
+
+| Method | Description |
+|--------|-------------|
+| `golapis.socket.udp()` | Create a new UDP socket object |
+| `sock:setpeername(host, port)` | Connect to UDP server |
+| `sock:setpeername("unix:/path")` | Connect to Unix datagram socket (Linux only) |
+| `sock:send(data)` | Send string, number, boolean, nil, or array table |
+| `sock:receive([size])` | Receive up to `size` bytes (default/max 65536) |
+| `sock:settimeout(ms)` | Set timeout in milliseconds |
+| `sock:bind(addr)` | Bind to local address before connecting |
+| `sock:close()` | Close the socket |
 
 ## Extensions
 
