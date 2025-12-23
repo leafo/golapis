@@ -189,3 +189,34 @@ Debugging utilities for timer inspection and control:
 |----------|-------------|
 | `golapis.debug.pending_timer_count()` | Returns the number of pending timers |
 | `golapis.debug.cancel_timers()` | Cancels all pending timers, firing their callbacks immediately with `premature=true` |
+
+## MoonScript Support
+
+The `golapis` command can run MoonScript files directly. Files with a `.moon`
+extension are automatically detected and compiled at load time.
+
+The entry file is compiled immediately, and the `moonloader` is installed so
+that you can `require()` any module written in MoonScript (with `.moon`) and it
+will get compiled on the fly.
+
+### Requirements
+
+MoonScript must be installed for Lua 5.1 (LuaJIT is Lua 5.1 compatible):
+
+```bash
+luarocks install --lua-version=5.1 moonscript
+```
+
+### Usage
+
+Run a MoonScript file directly:
+
+```bash
+golapis script.moon
+```
+
+Or start an HTTP server with a MoonScript entry point:
+
+```bash
+golapis --http --port=8080 app.moon
+```
