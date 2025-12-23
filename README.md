@@ -14,6 +14,26 @@ server within `net/http`.
 
 ## Go Interface
 
+### HTTP Server with State Pool
+
+When running in HTTP mode, golapis uses a pool of Lua states to handle requests concurrently across multiple workers. This provides better scalability and performance for high-concurrency workloads.
+
+```go
+import "golapis/golapis"
+
+config := golapis.DefaultHTTPServerConfig()
+config.StatePoolSize = 8  // Use 8 workers (defaults to runtime.NumCPU() if 0 or unset)
+config.ClientMaxBodySize = 2 * 1024 * 1024  // 2MB max body size
+
+golapis.StartHTTPServer("app.lua", "8080", config)
+```
+
+The state pool provides:
+- **Concurrent request handling**: Each worker handles requests independently
+- **Per-worker state isolation**: Module-level variables are isolated per worker (like OpenResty)
+- **Automatic load balancing**: Requests are distributed across available workers
+- **Graceful shutdown**: All workers are properly cleaned up on exit
+
 ### Creating a State
 
 Create a new Lua state with `NewGolapisLuaState()`:
