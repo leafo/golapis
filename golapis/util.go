@@ -131,6 +131,7 @@ type queryArg struct {
 // - "?foo=" returns foo=""
 // - "?foo=bar" returns foo="bar"
 // - Multiple values for same key are returned as repeated tuples in order
+// - maxArgs of 0 means unlimited
 func parseQueryString(rawQuery string, maxArgs int) ([]queryArg, bool) {
 	result := make([]queryArg, 0)
 	truncated := false

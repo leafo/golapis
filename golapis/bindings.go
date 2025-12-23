@@ -588,7 +588,6 @@ func golapis_sleep(L *C.lua_State) C.int {
 		}
 	}()
 
-	// Yield with 0 values (nginx-lua pattern)
 	return C.lua_yield_wrapper(L, 0)
 }
 
@@ -1103,12 +1102,12 @@ func golapisOutput(L *C.lua_State, appendNewline bool, funcName string) C.int {
 		n, writeErr := writer.Write(data)
 		if writeErr != nil {
 			C.lua_pushnil(L)
-			pushGoString(L, "nginx output filter error")
+			pushGoString(L, "failed to write to output")
 			return 2
 		}
 		if n <= 0 {
 			C.lua_pushnil(L)
-			pushGoString(L, "nginx output filter error")
+			pushGoString(L, "failed to write to output")
 			return 2
 		}
 		data = data[n:]
@@ -1286,10 +1285,10 @@ func pushQueryArgsToLuaTable(L *C.lua_State, args []queryArg) {
 
 //export golapis_req_get_uri_args
 func golapis_req_get_uri_args(L *C.lua_State) C.int {
-	// Get optional max argument (default 100, like nginx)
-	max := 100
+	// 0 means unlimited
+	maxArgs := 100
 	if C.lua_gettop(L) >= 1 && C.lua_isnumber(L, 1) != 0 {
-		max = int(C.lua_tonumber(L, 1))
+		maxArgs = int(C.lua_tonumber(L, 1))
 	}
 
 	// Get current thread's HTTP request
@@ -1300,8 +1299,7 @@ func golapis_req_get_uri_args(L *C.lua_State) C.int {
 		return 1
 	}
 
-	// Parse query parameters with nginx-lua compatible behavior
-	queryArgs, truncated := parseQueryString(thread.request.Request.URL.RawQuery, max)
+	queryArgs, truncated := parseQueryString(thread.request.Request.URL.RawQuery, maxArgs)
 
 	pushQueryArgsToLuaTable(L, queryArgs)
 
@@ -1315,7 +1313,6 @@ func golapis_req_get_uri_args(L *C.lua_State) C.int {
 
 //export golapis_req_get_headers
 func golapis_req_get_headers(L *C.lua_State) C.int {
-	// Get optional max_headers argument (default 100, like nginx)
 	// 0 means unlimited
 	maxHeaders := 100
 	if C.lua_gettop(L) >= 1 && C.lua_isnumber(L, 1) != 0 {
@@ -1469,7 +1466,7 @@ func golapis_req_read_body(L *C.lua_State) C.int {
 		return 2
 	}
 
-	// Success - return nothing (nginx-lua compatible)
+	// Success - return nothing
 	return 0
 }
 
@@ -1517,7 +1514,6 @@ func golapis_req_get_body_data(L *C.lua_State) C.int {
 
 //export golapis_req_get_post_args
 func golapis_req_get_post_args(L *C.lua_State) C.int {
-	// Get optional max_args argument (default 100, like nginx)
 	// 0 means unlimited
 	maxArgs := 100
 	if C.lua_gettop(L) >= 1 && C.lua_isnumber(L, 1) != 0 {
@@ -1547,7 +1543,7 @@ func golapis_req_get_post_args(L *C.lua_State) C.int {
 		return 1
 	}
 
-	// Parse body as application/x-www-form-urlencoded using existing parser
+	// Parse body as application/x-www-form-urlencoded
 	postArgs, truncated := parseQueryString(string(bodyData), maxArgs)
 
 	pushQueryArgsToLuaTable(L, postArgs)
