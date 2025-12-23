@@ -541,8 +541,8 @@ func TestUDPSocketDoubleConnect(t *testing.T) {
 	if !strings.Contains(output, "first: ok=1") {
 		t.Errorf("expected first connect to succeed, got: %q", output)
 	}
-	if !strings.Contains(output, "already connected") {
-		t.Errorf("expected 'already connected' error on second connect, got: %q", output)
+	if !strings.Contains(output, "second: ok=1") {
+		t.Errorf("expected second connect to succeed, got: %q", output)
 	}
 }
 
