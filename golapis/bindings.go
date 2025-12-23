@@ -1207,30 +1207,47 @@ func golapis_timer_at(L *C.lua_State) C.int {
 	// Track this timer in the wait group so Wait() blocks until timer completes
 	gls.threadWg.Add(1)
 
-	// Launch timer goroutine
-	go func() {
+	if delay == 0 {
+		// Optimization: skip goroutine for immediate execution
+		event := &StateEvent{
+			Type:      EventTimerFire,
+			Timer:     timer,
+			Premature: false,
+		}
+		// Avoid blocking the event loop; fall back to a goroutine only if the buffer is full.
 		select {
-		case <-time.After(time.Duration(delay * float64(time.Second))):
-			// Normal timer fire
-			// Note: if the state stops after this fires, the send can block forever.
-			// Acceptable for process shutdown; revisit if states are restarted long-lived.
-			gls.eventChan <- &StateEvent{
-				Type:      EventTimerFire,
-				Timer:     timer,
-				Premature: false,
-			}
-		case <-timer.cancelChan:
-			// Cancelled - check if we should fire callback or exit silently
-			if !timer.State.stopping.Load() {
+		case gls.eventChan <- event:
+		default:
+			go func() {
+				gls.eventChan <- event
+			}()
+		}
+	} else {
+		// Launch timer goroutine
+		go func() {
+			select {
+			case <-time.After(time.Duration(delay * float64(time.Second))):
+				// Normal timer fire
+				// Note: if the state stops after this fires, the send can block forever.
+				// Acceptable for process shutdown; revisit if states are restarted long-lived.
 				gls.eventChan <- &StateEvent{
 					Type:      EventTimerFire,
 					Timer:     timer,
-					Premature: true,
+					Premature: false,
 				}
+			case <-timer.cancelChan:
+				// Cancelled - check if we should fire callback or exit silently
+				if !timer.State.stopping.Load() {
+					gls.eventChan <- &StateEvent{
+						Type:      EventTimerFire,
+						Timer:     timer,
+						Premature: true,
+					}
+				}
+				// else: hard stop, exit silently without firing callback
 			}
-			// else: hard stop, exit silently without firing callback
-		}
-	}()
+		}()
+	}
 
 	if debugEnabled {
 		debugLog("timer.at: created timer co=%p delay=%v", co, delay)

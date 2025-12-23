@@ -71,6 +71,8 @@ type GolapisLuaState struct {
 	entrypointRef C.int // registry reference to preloaded entrypoint function (0 = not set)
 	outputBuffer  *bytes.Buffer
 	outputWriter  io.Writer
+	// Note: sends from the event loop goroutine can block if this buffer is full;
+	// use a non-blocking send with a goroutine fallback in that case.
 	eventChan     chan *StateEvent // all operations go through this channel
 	running       bool             // is event loop running?
 	threadWg      sync.WaitGroup   // tracks active threads for Wait()
