@@ -55,10 +55,10 @@ type UDPSocket struct {
 
 // UDP socket registry - maps socket ID to Go object
 var (
-	udpSocketMap      = make(map[uint64]*UDPSocket)
-	udpSocketMu       sync.Mutex
-	udpSocketIDSeq    uint64
-	cStrUDPMetatable  = C.CString("golapis.socket.udp") // allocated once, never freed
+	udpSocketMap     = make(map[uint64]*UDPSocket)
+	udpSocketMu      sync.Mutex
+	udpSocketIDSeq   uint64
+	cStrUDPMetatable = C.CString("golapis.socket.udp") // allocated once, never freed
 )
 
 func registerUDPSocket(sock *UDPSocket) uint64 {

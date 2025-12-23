@@ -344,12 +344,8 @@ func (gls *GolapisLuaState) handleRunEntryPoint(event *StateEvent) *StateRespons
 
 	thread, err := gls.newThread()
 	if err != nil {
-		C.pop_stack(gls.luaState, 1)
 		return &StateResponse{Error: err}
 	}
-
-	// Pop the function from main stack (newThread leaves it there)
-	C.pop_stack(gls.luaState, 1)
 
 	// Store the response channel, output writer, and request context on the thread
 	thread.responseChan = event.Response
@@ -471,6 +467,7 @@ func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 		state:  gls,
 		co:     co,
 		status: ThreadCreated,
+		coRef:  timer.CoRef,
 		ctxRef: ctxRef,
 	}
 
@@ -511,8 +508,7 @@ func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 		thread.close()
 	}
 
-	// Release the coroutine registry reference (prevents GC of coroutine)
-	C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, timer.CoRef)
+	// Coroutine registry reference is released in thread.close() after completion.
 }
 
 // CancelAllTimers cancels all pending timers, triggering them with premature=true

@@ -34,6 +34,7 @@ type LuaThread struct {
 	state        *GolapisLuaState
 	co           *C.lua_State
 	status       ThreadStatus
+	coRef        C.int               // Lua registry reference to coroutine
 	ctxRef       C.int               // Lua registry reference to the context table
 	responseChan chan *StateResponse // channel to send final response when thread completes
 	outputWriter io.Writer           // per-request output destination (e.g., http.ResponseWriter)
@@ -53,11 +54,13 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 	}
 
 	// Stack is now: [function, thread]
-	// Copy the function and move it to the coroutine
-	C.lua_pushvalue(gls.luaState, -2)
-	C.lua_xmove(gls.luaState, co, 1)
+	// Store coroutine in registry to prevent GC (luaL_ref pops it)
+	coRef := C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
 
-	// Remove the thread from main stack (function remains)
+	// Copy the function and move it to the coroutine
+	C.lua_pushvalue(gls.luaState, -1)
+	C.lua_xmove(gls.luaState, co, 1)
+	// Remove the original function from the main stack
 	C.lua_pop_wrapper(gls.luaState, 1)
 
 	// Create context table and store registry reference
@@ -68,6 +71,7 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 		state:  gls,
 		co:     co,
 		status: ThreadCreated,
+		coRef:  coRef,
 		ctxRef: ctxRef,
 	}
 
@@ -113,6 +117,9 @@ func (t *LuaThread) checkExitYield() bool {
 func (t *LuaThread) resume(values []interface{}) error {
 	if t.status == ThreadDead || t.status == ThreadExited {
 		return fmt.Errorf("cannot resume dead or exited thread")
+	}
+	if t.co == nil {
+		return fmt.Errorf("cannot resume closed thread")
 	}
 
 	if debugEnabled {
@@ -225,6 +232,11 @@ func (t *LuaThread) close() {
 			debugLog("thread.close: co=%p", t.co)
 		}
 		t.unregisterThread()
+
+		if t.coRef != 0 {
+			C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, t.coRef)
+			t.coRef = 0
+		}
 
 		// Release the context table reference
 		if t.ctxRef != 0 {
