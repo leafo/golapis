@@ -378,6 +378,10 @@ func TestUDPSocketReceiveWithSize(t *testing.T) {
 }
 
 func TestUDPSocketUnixDomain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unixgram sockets not supported on windows")
+	}
+
 	// Create temp directory for unix socket
 	tmpDir, err := os.MkdirTemp("", "golapis-udp-test")
 	if err != nil {
