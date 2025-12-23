@@ -16,6 +16,7 @@ const DefaultClientMaxBodySize int64 = 1 * 1024 * 1024
 // HTTPServerConfig holds configuration for the HTTP server
 type HTTPServerConfig struct {
 	ClientMaxBodySize int64 // max request body size in bytes (0 = unlimited)
+	NgxAlias          bool  // alias golapis table to global ngx
 }
 
 // DefaultHTTPServerConfig returns the default HTTP server configuration.
@@ -37,6 +38,10 @@ func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 	lua := NewGolapisLuaState()
 	if lua == nil {
 		log.Fatal("Failed to create Lua state")
+	}
+
+	if config.NgxAlias {
+		lua.SetupNgxAlias()
 	}
 
 	// Preload the entrypoint file at startup

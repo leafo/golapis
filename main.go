@@ -22,6 +22,7 @@ func main() {
 	vFlag := flag.Bool("v", false, "show version information")
 	eFlag := flag.String("e", "", "execute string 'stat'")
 	lFlag := flag.String("l", "", "require library 'name'")
+	ngxFlag := flag.Bool("ngx", false, "alias golapis table to global ngx")
 	flag.Parse()
 
 	if *versionFlag || *vFlag {
@@ -45,6 +46,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  -        execute stdin and stop handling options")
 		fmt.Fprintln(os.Stderr, "  --http   start HTTP server mode")
 		fmt.Fprintln(os.Stderr, "  --port   port for HTTP server (default 8080)")
+		fmt.Fprintln(os.Stderr, "  --ngx    alias golapis table to global ngx")
 		os.Exit(1)
 	}
 
@@ -60,19 +62,23 @@ func main() {
 			fmt.Fprintln(os.Stderr, "HTTP mode requires a script file")
 			os.Exit(1)
 		}
-		startHTTPServer(filename, *portFlag)
+		startHTTPServer(filename, *portFlag, *ngxFlag)
 	} else {
-		runSingleExecution(filename, scriptArgs, *lFlag, *eFlag)
+		runSingleExecution(filename, scriptArgs, *lFlag, *eFlag, *ngxFlag)
 	}
 }
 
-func runSingleExecution(filename string, scriptArgs []string, requireLib string, executeCode string) {
+func runSingleExecution(filename string, scriptArgs []string, requireLib string, executeCode string, ngxAlias bool) {
 	lua := golapis.NewGolapisLuaState()
 	if lua == nil {
 		fmt.Println("Failed to create Lua state")
 		os.Exit(1)
 	}
 	defer lua.Close()
+
+	if ngxAlias {
+		lua.SetupNgxAlias()
+	}
 
 	lua.Start()
 	defer lua.Stop()
@@ -127,7 +133,8 @@ func runSingleExecution(filename string, scriptArgs []string, requireLib string,
 	lua.Wait()
 }
 
-func startHTTPServer(filename, port string) {
+func startHTTPServer(filename, port string, ngxAlias bool) {
 	config := golapis.DefaultHTTPServerConfig()
+	config.NgxAlias = ngxAlias
 	golapis.StartHTTPServer(filename, port, config)
 }

@@ -19,6 +19,10 @@ static void lua_getglobal_wrapper(lua_State *L, const char *name) {
     lua_getglobal(L, name);
 }
 
+static void lua_setglobal_wrapper(lua_State *L, const char *name) {
+    lua_setglobal(L, name);
+}
+
 static void lua_pop_wrapper(lua_State *L, int n) {
     lua_pop(L, n);
 }

@@ -617,3 +617,13 @@ func (gls *GolapisLuaState) PreloadEntryPointFile(filename string) error {
 	gls.entrypointRef = C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
 	return nil
 }
+
+// SetupNgxAlias sets the global "ngx" to the golapis table for nginx-lua compatibility
+func (gls *GolapisLuaState) SetupNgxAlias() {
+	// Push golapis table from registry
+	C.lua_rawgeti_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.golapisRef)
+	// Set as global "ngx"
+	cname := C.CString("ngx")
+	defer C.free(unsafe.Pointer(cname))
+	C.lua_setglobal_wrapper(gls.luaState, cname)
+}
