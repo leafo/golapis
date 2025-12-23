@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -345,6 +346,101 @@ func TestUDPSocketSendNumber(t *testing.T) {
 	}
 }
 
+func TestUDPSocketSendTypes(t *testing.T) {
+	serverAddr, cleanup := startUDPEchoServer(t)
+	defer cleanup()
+
+	code := `
+		local sock = golapis.socket.udp()
+		sock:settimeout(1000)
+		local ok, err = sock:setpeername("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("connect error: ", err)
+			return
+		end
+
+		local cases = {
+			{true, "true"},
+			{false, "false"},
+			{nil, "nil"},
+			{{"a", {"b", "c"}, 1}, "abc1"},
+		}
+
+		for _, item in ipairs(cases) do
+			local ok, err = sock:send(item[1])
+			if not ok then
+				golapis.say("send error: ", err)
+				return
+			end
+			local data, err = sock:receive()
+			if not data then
+				golapis.say("receive error: ", err)
+				return
+			end
+			golapis.say("received: ", data)
+		end
+
+		sock:close()
+	`
+
+	output, err := runUDPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "received: true") {
+		t.Errorf("expected 'received: true', got: %q", output)
+	}
+	if !strings.Contains(output, "received: false") {
+		t.Errorf("expected 'received: false', got: %q", output)
+	}
+	if !strings.Contains(output, "received: nil") {
+		t.Errorf("expected 'received: nil', got: %q", output)
+	}
+	if !strings.Contains(output, "received: abc1") {
+		t.Errorf("expected 'received: abc1', got: %q", output)
+	}
+}
+
+func TestUDPSocketSendTableStrict(t *testing.T) {
+	serverAddr, cleanup := startUDPEchoServer(t)
+	defer cleanup()
+
+	code := `
+		local sock = golapis.socket.udp()
+		sock:settimeout(1000)
+		local ok, err = sock:setpeername("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("connect error: ", err)
+			return
+		end
+
+		-- boolean in table should fail (strict mode)
+		local ok, err = sock:send({"a", true, "b"})
+		if not ok then
+			golapis.say("boolean error: ", err)
+		end
+
+		-- nested boolean should also fail
+		local ok, err = sock:send({"a", {"b", false}, "c"})
+		if not ok then
+			golapis.say("nested boolean error: ", err)
+		end
+
+		sock:close()
+	`
+
+	output, err := runUDPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "boolean error: bad data type boolean in the array") {
+		t.Errorf("expected boolean rejection error, got: %q", output)
+	}
+	if !strings.Contains(output, "nested boolean error: bad data type boolean in the array") {
+		t.Errorf("expected nested boolean rejection error, got: %q", output)
+	}
+}
+
 func TestUDPSocketReceiveWithSize(t *testing.T) {
 	serverAddr, cleanup := startUDPEchoServer(t)
 	defer cleanup()
@@ -418,36 +514,40 @@ func TestUDPSocketUnixDomain(t *testing.T) {
 		}
 	}()
 
-	// Create client socket path
-	clientSocketPath := filepath.Join(tmpDir, "client.sock")
-
 	code := `
 		local sock = golapis.socket.udp()
 		sock:settimeout(1000)
 
-		-- For unixgram, we need to bind to a local path first
-		-- But our API might not support that yet, so let's test what we have
 		local ok, err = sock:setpeername("unix:` + socketPath + `")
 		if not ok then
 			golapis.say("connect error: ", err)
 			return
 		end
 
-		golapis.say("connected to unix socket")
+		-- Send data and receive echo reply (tests autobind)
+		local ok, err = sock:send("hello unix")
+		if not ok then
+			golapis.say("send error: ", err)
+			return
+		end
+
+		local data, err = sock:receive()
+		if not data then
+			golapis.say("receive error: ", err)
+			return
+		end
+
+		golapis.say("received: ", data)
 		sock:close()
 	`
 
 	output, err := runUDPTest(t, code)
-	// Unix datagram sockets require the client to be bound too for bidirectional communication
-	// So we just test that connection works
 	if err != nil {
 		t.Fatalf("Lua error: %v", err)
 	}
-
-	// The test might show an error since unixgram requires bound client
-	// Just verify the API works without crashing
-	_ = output
-	_ = clientSocketPath
+	if !strings.Contains(output, "received: hello unix") {
+		t.Errorf("expected echo reply, got: %q", output)
+	}
 }
 
 func TestUDPSocketDNSResolution(t *testing.T) {

@@ -7,9 +7,12 @@ import "C"
 import (
 	"fmt"
 	"net"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -55,10 +58,12 @@ type UDPSocket struct {
 
 // UDP socket registry - maps socket ID to Go object
 var (
-	udpSocketMap     = make(map[uint64]*UDPSocket)
-	udpSocketMu      sync.Mutex
-	udpSocketIDSeq   uint64
-	cStrUDPMetatable = C.CString("golapis.socket.udp") // allocated once, never freed
+	udpSocketMap       = make(map[uint64]*UDPSocket)
+	udpSocketMu        sync.Mutex
+	udpSocketIDSeq     uint64
+	unixAutobindSeq    uint64                           // counter for unique abstract socket paths
+	cStrUDPMetatable   = C.CString("golapis.socket.udp") // allocated once, never freed
+	unixAutobindPrefix = fmt.Sprintf("@golapis-%d-", os.Getpid())
 )
 
 func registerUDPSocket(sock *UDPSocket) uint64 {
@@ -101,6 +106,70 @@ func checkSocketAffinity(L *C.lua_State, sock *UDPSocket) bool {
 		return false
 	}
 	return true
+}
+
+func luaAbsIndex(L *C.lua_State, idx C.int) C.int {
+	if idx > 0 || idx <= C.LUA_REGISTRYINDEX {
+		return idx
+	}
+	return C.lua_gettop(L) + idx + 1
+}
+
+func appendLuaNumber(buf *[]byte, num float64) {
+	if num == float64(int64(num)) {
+		*buf = strconv.AppendInt(*buf, int64(num), 10)
+	} else {
+		*buf = strconv.AppendFloat(*buf, num, 'g', -1, 64)
+	}
+}
+
+func appendLuaValue(L *C.lua_State, idx C.int, buf *[]byte, strict bool) (bool, string) {
+	idx = luaAbsIndex(L, idx)
+
+	switch C.lua_type(L, idx) {
+	case C.LUA_TSTRING:
+		var length C.size_t
+		cstr := C.lua_tolstring_wrapper(L, idx, &length)
+		*buf = append(*buf, C.GoBytes(unsafe.Pointer(cstr), C.int(length))...)
+		return true, ""
+
+	case C.LUA_TNUMBER:
+		appendLuaNumber(buf, float64(C.lua_tonumber(L, idx)))
+		return true, ""
+
+	case C.LUA_TBOOLEAN:
+		if strict {
+			return false, "bad data type boolean in the array"
+		}
+		if C.lua_toboolean(L, idx) != 0 {
+			*buf = append(*buf, []byte("true")...)
+		} else {
+			*buf = append(*buf, []byte("false")...)
+		}
+		return true, ""
+
+	case C.LUA_TNIL:
+		if strict {
+			return false, "bad data type nil in the array"
+		}
+		*buf = append(*buf, []byte("nil")...)
+		return true, ""
+
+	case C.LUA_TTABLE:
+		tableLen := int(C.lua_objlen(L, idx))
+		for i := 1; i <= tableLen; i++ {
+			C.lua_rawgeti_wrapper(L, idx, C.int(i))
+			ok, errMsg := appendLuaValue(L, -1, buf, true)
+			C.lua_pop_wrapper(L, 1)
+			if !ok {
+				return false, errMsg
+			}
+		}
+		return true, ""
+	}
+
+	typeName := C.GoString(C.lua_typename(L, C.lua_type(L, idx)))
+	return false, fmt.Sprintf("string, number, boolean, nil, or array table expected, got %s", typeName)
 }
 
 // =============================================================================
@@ -219,8 +288,29 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 
 	// Unix domain socket: "unix:/path"
 	if strings.HasPrefix(arg1, "unix:") {
+		if runtime.GOOS != "linux" {
+			C.lua_pushnil(L)
+			pushGoString(L, "unix domain sockets require linux")
+			return 2
+		}
+
 		path := arg1[5:]
-		conn, err := net.Dial("unixgram", path)
+		remoteAddr, err := net.ResolveUnixAddr("unixgram", path)
+		if err != nil {
+			C.lua_pushnil(L)
+			pushGoString(L, err.Error())
+			return 2
+		}
+		// Autobind to abstract socket for bidirectional communication (like OpenResty)
+		seq := atomic.AddUint64(&unixAutobindSeq, 1)
+		localPath := unixAutobindPrefix + strconv.FormatUint(seq, 10)
+		localAddr, err := net.ResolveUnixAddr("unixgram", localPath)
+		if err != nil {
+			C.lua_pushnil(L)
+			pushGoString(L, err.Error())
+			return 2
+		}
+		conn, err := net.DialUnix("unixgram", localAddr, remoteAddr)
 		if err != nil {
 			C.lua_pushnil(L)
 			pushGoString(L, err.Error())
@@ -338,48 +428,10 @@ func golapis_udp_send(L *C.lua_State) C.int {
 	}
 
 	var data []byte
-
-	switch C.lua_type(L, 2) {
-	case C.LUA_TSTRING:
-		// Use tolstring to handle embedded NULs
-		var length C.size_t
-		cstr := C.lua_tolstring_wrapper(L, 2, &length)
-		data = C.GoBytes(unsafe.Pointer(cstr), C.int(length))
-
-	case C.LUA_TNUMBER:
-		num := float64(C.lua_tonumber(L, 2))
-		// Format as integer if whole number, otherwise as float
-		if num == float64(int64(num)) {
-			data = []byte(fmt.Sprintf("%d", int64(num)))
-		} else {
-			data = []byte(fmt.Sprintf("%g", num))
-		}
-
-	case C.LUA_TTABLE:
-		// Concatenate table fragments (array part only)
-		var buf []byte
-		tableLen := int(C.lua_objlen(L, 2))
-		for i := 1; i <= tableLen; i++ {
-			C.lua_rawgeti_wrapper(L, 2, C.int(i))
-			if C.lua_isstring(L, -1) != 0 {
-				var length C.size_t
-				cstr := C.lua_tolstring_wrapper(L, -1, &length)
-				buf = append(buf, C.GoBytes(unsafe.Pointer(cstr), C.int(length))...)
-			} else if C.lua_isnumber(L, -1) != 0 {
-				num := float64(C.lua_tonumber(L, -1))
-				if num == float64(int64(num)) {
-					buf = append(buf, []byte(fmt.Sprintf("%d", int64(num)))...)
-				} else {
-					buf = append(buf, []byte(fmt.Sprintf("%g", num))...)
-				}
-			}
-			C.lua_pop_wrapper(L, 1)
-		}
-		data = buf
-
-	default:
+	ok, errMsg := appendLuaValue(L, 2, &data, false)
+	if !ok {
 		C.lua_pushnil(L)
-		pushGoString(L, "send data must be string, number, or table")
+		pushGoString(L, errMsg)
 		return 2
 	}
 
