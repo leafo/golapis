@@ -124,4 +124,9 @@ static void lua_push_traceback(lua_State *L, lua_State *co) {
     lua_remove(L, -2);          // remove debug table, keep traceback
 }
 
+// Wrapper for lua_gc (memory management and garbage collection)
+static int lua_gc_wrapper(lua_State *L, int what, int data) {
+    return lua_gc(L, what, data);
+}
+
 #endif

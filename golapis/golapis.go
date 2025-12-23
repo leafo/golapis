@@ -195,6 +195,16 @@ func (gls *GolapisLuaState) ClearOutput() {
 	gls.outputBuffer.Reset()
 }
 
+// GetLuaMemoryKB returns the current Lua memory usage in kilobytes
+func (gls *GolapisLuaState) GetLuaMemoryKB() int {
+	return int(C.lua_gc_wrapper(gls.luaState, C.LUA_GCCOUNT, 0))
+}
+
+// ForceLuaGC triggers a full garbage collection cycle in the Lua state
+func (gls *GolapisLuaState) ForceLuaGC() {
+	C.lua_gc_wrapper(gls.luaState, C.LUA_GCCOLLECT, 0)
+}
+
 // Start launches the event loop goroutine
 func (gls *GolapisLuaState) Start() {
 	gls.stopping.Store(false)
