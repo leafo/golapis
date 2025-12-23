@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"golapis/golapis"
@@ -18,9 +19,12 @@ func main() {
 	httpFlag := flag.Bool("http", false, "Start as HTTP server")
 	portFlag := flag.String("port", "8080", "Port for HTTP server")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
+	vFlag := flag.Bool("v", false, "show version information")
+	eFlag := flag.String("e", "", "execute string 'stat'")
+	lFlag := flag.String("l", "", "require library 'name'")
 	flag.Parse()
 
-	if *versionFlag {
+	if *versionFlag || *vFlag {
 		fmt.Printf("golapis %s\n", version)
 		fmt.Printf("  commit: %s\n", gitCommit)
 		fmt.Printf("  built:  %s\n", buildDate)
@@ -29,22 +33,40 @@ func main() {
 	}
 
 	args := flag.Args()
-	if len(args) < 1 {
-		fmt.Printf("Usage: %s [--http] [--port=8080] <lua_file>\n", os.Args[0])
+
+	// Require at least a filename unless -e is provided
+	if len(args) < 1 && *eFlag == "" {
+		fmt.Fprintf(os.Stderr, "usage: %s [options] [script [args]]\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "Available options are:")
+		fmt.Fprintln(os.Stderr, "  -e stat  execute string 'stat'")
+		fmt.Fprintln(os.Stderr, "  -l name  require library 'name'")
+		fmt.Fprintln(os.Stderr, "  -v       show version information")
+		fmt.Fprintln(os.Stderr, "  --       stop handling options")
+		fmt.Fprintln(os.Stderr, "  -        execute stdin and stop handling options")
+		fmt.Fprintln(os.Stderr, "  --http   start HTTP server mode")
+		fmt.Fprintln(os.Stderr, "  --port   port for HTTP server (default 8080)")
 		os.Exit(1)
 	}
 
-	filename := args[0]
-	scriptArgs := args[1:]
+	var filename string
+	var scriptArgs []string
+	if len(args) > 0 {
+		filename = args[0]
+		scriptArgs = args[1:]
+	}
 
 	if *httpFlag {
+		if filename == "" {
+			fmt.Fprintln(os.Stderr, "HTTP mode requires a script file")
+			os.Exit(1)
+		}
 		startHTTPServer(filename, *portFlag)
 	} else {
-		runSingleExecution(filename, scriptArgs)
+		runSingleExecution(filename, scriptArgs, *lFlag, *eFlag)
 	}
 }
 
-func runSingleExecution(filename string, scriptArgs []string) {
+func runSingleExecution(filename string, scriptArgs []string, requireLib string, executeCode string) {
 	lua := golapis.NewGolapisLuaState()
 	if lua == nil {
 		fmt.Println("Failed to create Lua state")
@@ -55,8 +77,47 @@ func runSingleExecution(filename string, scriptArgs []string) {
 	lua.Start()
 	defer lua.Stop()
 
-	lua.SetupArgTable(os.Args[0], filename, scriptArgs)
+	// Set up arg table (use "-e" as script name if no file provided)
+	scriptName := filename
+	if scriptName == "" {
+		scriptName = "=(command line)"
+	}
+	lua.SetupArgTable(os.Args[0], scriptName, scriptArgs)
 
+	// Handle -l: require library
+	if requireLib != "" {
+		if err := lua.RequireModule(requireLib); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+
+	// Handle -e: execute string (if no filename provided)
+	if filename == "" && executeCode != "" {
+		if err := lua.RunString(executeCode); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		lua.Wait()
+		return
+	}
+
+	// Handle "-": read from stdin
+	if filename == "-" {
+		stdinBytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error reading stdin:", err)
+			os.Exit(1)
+		}
+		if err := lua.RunString(string(stdinBytes)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		lua.Wait()
+		return
+	}
+
+	// Run the file
 	if err := lua.RunFile(filename, scriptArgs); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

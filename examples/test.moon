@@ -1,3 +1,6 @@
+
+require("moon").p {...}
+
 golapis.say "Hello from MoonScript!"
 
 items = {"one", "two", "three"}

@@ -269,6 +269,11 @@ func (gls *GolapisLuaState) RunString(code string) error {
 	return result.Error
 }
 
+// RequireModule executes require("name") to load a module
+func (gls *GolapisLuaState) RequireModule(name string) error {
+	return gls.RunString(fmt.Sprintf("require(%q)", name))
+}
+
 // eventLoop is the main event loop that processes all state operations
 func (gls *GolapisLuaState) eventLoop() {
 	for event := range gls.eventChan {
