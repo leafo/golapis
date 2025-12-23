@@ -45,6 +45,17 @@ extern int golapis_udp_close(lua_State *L);
 extern int golapis_udp_bind(lua_State *L);
 extern int golapis_udp_gc(lua_State *L);
 
+// argf is the index where arg[0] (script name) starts
+static void create_arg_table(lua_State *L, const char **argv, int argc, int argf) {
+    int i;
+    lua_createtable(L, argc - argf, argf);  // array size, hash size
+    for (i = 0; i < argc; i++) {
+        lua_pushstring(L, argv[i]);
+        lua_rawseti(L, -2, i - argf);
+    }
+    lua_setglobal(L, "arg");
+}
+
 static int c_sleep_wrapper(lua_State *L) {
     return golapis_sleep(L);
 }
@@ -1629,6 +1640,32 @@ func (gls *GolapisLuaState) SetupGolapis() {
 	if err := gls.runBootstrap(); err != nil {
 		panic(fmt.Sprintf("failed to run bootstrap: %v", err))
 	}
+}
+
+// SetupArgTable creates the global arg table
+// programName is typically os.Args[0], scriptPath is the script filename,
+// and args are any additional arguments passed after the script name.
+// The resulting arg table has:
+//   - arg[-1] = programName
+//   - arg[0] = scriptPath
+//   - arg[1], arg[2], ... = args
+func (gls *GolapisLuaState) SetupArgTable(programName, scriptPath string, args []string) {
+	// Build argv array: [programName, scriptPath, args...]
+	argc := 2 + len(args)
+	argv := make([]*C.char, argc)
+
+	argv[0] = C.CString(programName)
+	defer C.free(unsafe.Pointer(argv[0]))
+	argv[1] = C.CString(scriptPath)
+	defer C.free(unsafe.Pointer(argv[1]))
+
+	for i, arg := range args {
+		argv[i+2] = C.CString(arg)
+		defer C.free(unsafe.Pointer(argv[i+2]))
+	}
+
+	// argf=1 means arg[0] = scriptPath (index 1 in argv)
+	C.create_arg_table(gls.luaState, &argv[0], C.int(argc), 1)
 }
 
 // runBootstrap executes the embedded bootstrap.lua with the golapis table as argument

@@ -35,15 +35,16 @@ func main() {
 	}
 
 	filename := args[0]
+	scriptArgs := args[1:]
 
 	if *httpFlag {
 		startHTTPServer(filename, *portFlag)
 	} else {
-		runSingleExecution(filename)
+		runSingleExecution(filename, scriptArgs)
 	}
 }
 
-func runSingleExecution(filename string) {
+func runSingleExecution(filename string, scriptArgs []string) {
 	lua := golapis.NewGolapisLuaState()
 	if lua == nil {
 		fmt.Println("Failed to create Lua state")
@@ -54,7 +55,9 @@ func runSingleExecution(filename string) {
 	lua.Start()
 	defer lua.Stop()
 
-	if err := lua.RunFile(filename); err != nil {
+	lua.SetupArgTable(os.Args[0], filename, scriptArgs)
+
+	if err := lua.RunFile(filename, scriptArgs); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

@@ -40,7 +40,7 @@ defer lua.Stop()
 #### Execute a Lua file
 
 ```go
-err := lua.RunFile("script.lua")
+err := lua.RunFile("script.lua", nil)
 if err != nil {
     fmt.Printf("Error: %v\n", err)
 }
@@ -89,7 +89,7 @@ func main() {
     lua.Start()
     defer lua.Stop()
 
-    if err := lua.RunFile("script.lua"); err != nil {
+    if err := lua.RunFile("script.lua", nil); err != nil {
         fmt.Printf("Error: %v\n", err)
         os.Exit(1)
     }

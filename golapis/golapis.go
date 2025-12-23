@@ -236,13 +236,22 @@ func (gls *GolapisLuaState) Wait() {
 	gls.threadWg.Wait()
 }
 
-// RunFile sends a request to execute a Lua file
-func (gls *GolapisLuaState) RunFile(filename string) error {
+// RunFile sends a request to execute a Lua file.
+// The args are passed to the chunk and become available as ... in the script.
+func (gls *GolapisLuaState) RunFile(filename string, args []string) error {
 	resp := make(chan *StateResponse, 1)
+
+	// Convert args to []interface{} for ReturnVals
+	var initArgs []interface{}
+	for _, arg := range args {
+		initArgs = append(initArgs, arg)
+	}
+
 	gls.eventChan <- &StateEvent{
-		Type:     EventRunFile,
-		Filename: filename,
-		Response: resp,
+		Type:       EventRunFile,
+		Filename:   filename,
+		ReturnVals: initArgs,
+		Response:   resp,
 	}
 	result := <-resp
 	return result.Error
@@ -318,7 +327,7 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 	thread.outputWriter = event.OutputWriter
 	thread.request = event.Request
 
-	if err := thread.resume(nil); err != nil {
+	if err := thread.resume(event.ReturnVals); err != nil {
 		thread.close()
 		return &StateResponse{Error: err}
 	}
