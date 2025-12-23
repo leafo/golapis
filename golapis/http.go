@@ -16,42 +16,45 @@ const DefaultClientMaxBodySize int64 = 1 * 1024 * 1024
 // HTTPServerConfig holds configuration for the HTTP server
 type HTTPServerConfig struct {
 	ClientMaxBodySize int64 // max request body size in bytes (0 = unlimited)
+	StatePoolSize     int   // number of Lua states in pool (0 = runtime.NumCPU())
 }
 
 // DefaultHTTPServerConfig returns the default HTTP server configuration.
 func DefaultHTTPServerConfig() *HTTPServerConfig {
 	return &HTTPServerConfig{
 		ClientMaxBodySize: DefaultClientMaxBodySize,
+		StatePoolSize:     0, // defaults to runtime.NumCPU()
 	}
 }
 
 // StartHTTPServer starts an HTTP server that executes the given Lua script for each request
-// Uses a single shared GolapisLuaState for all requests with cooperative scheduling
+// Uses a pool of GolapisLuaState instances to handle requests concurrently
 func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 	fmt.Printf("Starting HTTP server on port %s with script: %s\n", port, filename)
 	if config == nil {
 		config = DefaultHTTPServerConfig()
 	}
 
-	// Create single shared Lua state at server startup
-	lua := NewGolapisLuaState()
-	if lua == nil {
-		log.Fatal("Failed to create Lua state")
+	// Create state pool
+	pool, err := NewStatePool(filename, config.StatePoolSize)
+	if err != nil {
+		log.Fatalf("Failed to create state pool: %v", err)
 	}
-
-	// Preload the entrypoint file at startup
-	if err := lua.PreloadEntryPointFile(filename); err != nil {
-		lua.Close()
-		log.Fatalf("Failed to load Lua script %s: %v", filename, err)
-	}
-
-	// Start the event loop (runs for lifetime of server)
-	lua.Start()
+	fmt.Printf("Created state pool with %d workers\n", pool.Size())
 
 	// Setup graceful shutdown
-	setupGracefulShutdown(lua)
+	setupGracefulShutdown(pool)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Get a state from the pool
+		lua, err := pool.Get()
+		if err != nil {
+			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+			logHTTPRequest(r, time.Now(), http.StatusServiceUnavailable, 0)
+			return
+		}
+		defer pool.Put(lua) // Return state to pool when done
+
 		// Create request context and wrap the response writer
 		req := NewGolapisRequest(r)
 		req.maxBodySize = config.ClientMaxBodySize
@@ -60,7 +63,7 @@ func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 		// Create response channel for this request
 		resp := make(chan *StateResponse, 1)
 
-		// Send request to shared Lua state's event loop
+		// Send request to the state's event loop
 		lua.eventChan <- &StateEvent{
 			Type:         EventRunEntryPoint,
 			OutputWriter: wrappedWriter,
@@ -92,15 +95,14 @@ func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 }
 
 // setupGracefulShutdown sets up signal handling for graceful shutdown
-func setupGracefulShutdown(lua *GolapisLuaState) {
+func setupGracefulShutdown(pool *StatePool) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		<-c
 		fmt.Println("\nShutting down gracefully...")
-		lua.Stop()
-		lua.Close()
+		pool.Close()
 		os.Exit(0)
 	}()
 }
