@@ -188,16 +188,18 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 		return 2
 	}
 
-	if sock.connected {
-		C.lua_pushnil(L)
-		pushGoString(L, "already connected")
-		return 2
-	}
-
 	if sock.closed {
 		C.lua_pushnil(L)
 		pushGoString(L, "closed")
 		return 2
+	}
+
+	if sock.connected && sock.conn != nil {
+		sock.conn.Close()
+		sock.conn = nil
+		sock.connected = false
+		sock.isUnix = false
+		sock.gen++
 	}
 
 	thread := getLuaThreadFromRegistry(L)
