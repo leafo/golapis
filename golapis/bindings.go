@@ -577,16 +577,33 @@ func golapis_sleep(L *C.lua_State) C.int {
 		return 2
 	}
 
-	// Start async timer that will send to eventChan when done
-	go func() {
-		time.Sleep(time.Duration(seconds * float64(time.Second)))
-		thread.state.eventChan <- &StateEvent{
+	if seconds == 0 {
+		// Yield back to the event loop without spawning a timer goroutine.
+		event := &StateEvent{
 			Type:       EventResumeThread,
 			Thread:     thread,
 			ReturnVals: nil, // sleep returns nothing
 			Response:   nil, // no response needed for internal events
 		}
-	}()
+		select {
+		case thread.state.eventChan <- event:
+		default:
+			go func() {
+				thread.state.eventChan <- event
+			}()
+		}
+	} else {
+		// Start async timer that will send to eventChan when done
+		go func() {
+			time.Sleep(time.Duration(seconds * float64(time.Second)))
+			thread.state.eventChan <- &StateEvent{
+				Type:       EventResumeThread,
+				Thread:     thread,
+				ReturnVals: nil, // sleep returns nothing
+				Response:   nil, // no response needed for internal events
+			}
+		}()
+	}
 
 	return C.lua_yield_wrapper(L, 0)
 }
