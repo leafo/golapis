@@ -1,0 +1,586 @@
+package golapis
+
+/*
+#include "lua_helpers.h"
+*/
+import "C"
+import (
+	"io"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unsafe"
+)
+
+// =============================================================================
+// TCP Socket Implementation
+// =============================================================================
+
+// TCPSocket represents a TCP cosocket compatible with ngx.socket.tcp
+type TCPSocket struct {
+	conn        net.Conn      // *net.TCPConn or *net.UnixConn
+	timeout     time.Duration // per-socket timeout (0 = no timeout)
+	connected   bool          // true after successful connect
+	closed      bool          // true after close() called
+	isUnix      bool          // true for unix:/ domain sockets
+	gen         uint64        // increments to invalidate in-flight async operations
+	ownerThread *C.lua_State  // coroutine that created this socket (for request affinity)
+
+	// TCP-specific: internal read buffer for exact byte reads
+	readBuf    []byte
+	readBufPos int
+
+	// Connection pooling tracking (stub for now)
+	reusedTimes int // number of times retrieved from pool (always 0 for now)
+}
+
+// TCP socket registry - maps socket ID to Go object
+var (
+	tcpSocketMap     = make(map[uint64]*TCPSocket)
+	tcpSocketMu      sync.Mutex
+	tcpSocketIDSeq   uint64
+	cStrTCPMetatable = C.CString("golapis.socket.tcp") // allocated once, never freed
+)
+
+func registerTCPSocket(sock *TCPSocket) uint64 {
+	tcpSocketMu.Lock()
+	defer tcpSocketMu.Unlock()
+	tcpSocketIDSeq++
+	tcpSocketMap[tcpSocketIDSeq] = sock
+	return tcpSocketIDSeq
+}
+
+func getTCPSocketByID(id uint64) *TCPSocket {
+	tcpSocketMu.Lock()
+	defer tcpSocketMu.Unlock()
+	return tcpSocketMap[id]
+}
+
+func unregisterTCPSocket(id uint64) {
+	tcpSocketMu.Lock()
+	defer tcpSocketMu.Unlock()
+	delete(tcpSocketMap, id)
+}
+
+// getTCPSocketFromUserdata extracts the TCPSocket from Lua userdata at stack index
+func getTCPSocketFromUserdata(L *C.lua_State, idx C.int) (*TCPSocket, uint64) {
+	ptr := C.lua_touserdata_wrapper(L, idx)
+	if ptr == nil {
+		return nil, 0
+	}
+	id := *(*uint64)(ptr)
+	return getTCPSocketByID(id), id
+}
+
+// checkTCPSocketAffinity verifies the socket belongs to the current thread.
+// Returns true if affinity check passes.
+// Returns false and pushes (nil, "bad request") to Lua stack if it fails.
+func checkTCPSocketAffinity(L *C.lua_State, sock *TCPSocket) bool {
+	if sock.ownerThread != L {
+		C.lua_pushnil(L)
+		pushGoString(L, "bad request")
+		return false
+	}
+	return true
+}
+
+// =============================================================================
+// Exported Functions (called from C wrappers)
+// =============================================================================
+
+//export golapis_socket_tcp_new
+func golapis_socket_tcp_new(L *C.lua_State) C.int {
+	sock := &TCPSocket{
+		timeout:     0,
+		ownerThread: L,
+	}
+	id := registerTCPSocket(sock)
+
+	// Create userdata containing the socket ID
+	ptr := C.lua_newuserdata(L, C.size_t(unsafe.Sizeof(uint64(0))))
+	*(*uint64)(ptr) = id
+
+	// Apply the TCP socket metatable
+	C.luaL_getmetatable_wrapper(L, cStrTCPMetatable)
+	C.lua_setmetatable(L, -2)
+
+	return 1
+}
+
+//export golapis_tcp_settimeout
+func golapis_tcp_settimeout(L *C.lua_State) C.int {
+	sock, _ := getTCPSocketFromUserdata(L, 1)
+	if sock == nil {
+		return 0
+	}
+	if !checkTCPSocketAffinity(L, sock) {
+		return 2
+	}
+
+	if C.lua_gettop(L) < 2 || C.lua_isnumber(L, 2) == 0 {
+		return 0
+	}
+
+	ms := float64(C.lua_tonumber(L, 2))
+	sock.timeout = time.Duration(ms) * time.Millisecond
+	return 0 // settimeout returns nothing per OpenResty spec
+}
+
+//export golapis_tcp_connect
+func golapis_tcp_connect(L *C.lua_State) C.int {
+	sock, _ := getTCPSocketFromUserdata(L, 1)
+	if sock == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "invalid socket")
+		return 2
+	}
+	if !checkTCPSocketAffinity(L, sock) {
+		return 2
+	}
+
+	if sock.closed {
+		C.lua_pushnil(L)
+		pushGoString(L, "closed")
+		return 2
+	}
+
+	// If already connected, close existing connection
+	if sock.connected && sock.conn != nil {
+		sock.conn.Close()
+		sock.conn = nil
+		sock.connected = false
+		sock.isUnix = false
+		sock.readBuf = nil
+		sock.readBufPos = 0
+		sock.gen++
+	}
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "connect: could not find thread context")
+		return 2
+	}
+
+	if C.lua_gettop(L) < 2 || C.lua_isstring(L, 2) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "connect requires host argument")
+		return 2
+	}
+
+	arg1 := C.GoString(C.lua_tostring_wrapper(L, 2))
+
+	// Unix domain socket: "unix:/path"
+	if strings.HasPrefix(arg1, "unix:") {
+		path := arg1[5:]
+		timeout := sock.timeout
+		gen := sock.gen
+
+		go func() {
+			var conn net.Conn
+			var err error
+
+			if timeout > 0 {
+				conn, err = net.DialTimeout("unix", path, timeout)
+			} else {
+				conn, err = net.Dial("unix", path)
+			}
+
+			if err != nil {
+				thread.state.eventChan <- &StateEvent{
+					Type:       EventResumeThread,
+					Thread:     thread,
+					ReturnVals: []interface{}{nil, normalizeNetError(err)},
+				}
+				return
+			}
+
+			thread.state.eventChan <- &StateEvent{
+				Type:       EventResumeThread,
+				Thread:     thread,
+				ReturnVals: []interface{}{1},
+				OnResume: func(event *StateEvent) {
+					if sock.closed || sock.gen != gen {
+						if conn != nil {
+							conn.Close()
+						}
+						event.ReturnVals = []interface{}{nil, "closed"}
+						return
+					}
+					sock.conn = conn
+					sock.connected = true
+					sock.isUnix = true
+				},
+			}
+		}()
+
+		return C.lua_yield_wrapper(L, 0)
+	}
+
+	// TCP socket - requires port
+	if C.lua_gettop(L) < 3 || C.lua_isnumber(L, 3) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "connect requires port argument")
+		return 2
+	}
+
+	portNum := float64(C.lua_tonumber(L, 3))
+	if portNum != float64(int(portNum)) || portNum < 1 || portNum > 65535 {
+		C.lua_pushnil(L)
+		pushGoString(L, "invalid port")
+		return 2
+	}
+
+	port := int(portNum)
+	host := arg1
+	timeout := sock.timeout
+	gen := sock.gen
+
+	go func() {
+		var conn net.Conn
+		var err error
+
+		dialer := &net.Dialer{}
+		if timeout > 0 {
+			dialer.Timeout = timeout
+		}
+
+		conn, err = dialer.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+
+		if err != nil {
+			thread.state.eventChan <- &StateEvent{
+				Type:       EventResumeThread,
+				Thread:     thread,
+				ReturnVals: []interface{}{nil, normalizeNetError(err)},
+			}
+			return
+		}
+
+		thread.state.eventChan <- &StateEvent{
+			Type:       EventResumeThread,
+			Thread:     thread,
+			ReturnVals: []interface{}{1},
+			OnResume: func(event *StateEvent) {
+				if sock.closed || sock.gen != gen {
+					conn.Close()
+					event.ReturnVals = []interface{}{nil, "closed"}
+					return
+				}
+				sock.conn = conn
+				sock.connected = true
+			},
+		}
+	}()
+
+	return C.lua_yield_wrapper(L, 0)
+}
+
+//export golapis_tcp_send
+func golapis_tcp_send(L *C.lua_State) C.int {
+	sock, _ := getTCPSocketFromUserdata(L, 1)
+	if sock == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "invalid socket")
+		return 2
+	}
+	if !checkTCPSocketAffinity(L, sock) {
+		return 2
+	}
+
+	if sock.closed {
+		C.lua_pushnil(L)
+		pushGoString(L, "closed")
+		return 2
+	}
+
+	if !sock.connected {
+		C.lua_pushnil(L)
+		pushGoString(L, "not connected")
+		return 2
+	}
+
+	if C.lua_gettop(L) < 2 {
+		C.lua_pushnil(L)
+		pushGoString(L, "send requires data argument")
+		return 2
+	}
+
+	var data []byte
+	ok, errMsg := appendLuaValue(L, 2, &data, false)
+	if !ok {
+		C.lua_pushnil(L)
+		pushGoString(L, errMsg)
+		return 2
+	}
+
+	// Set write deadline if timeout is set
+	if sock.timeout > 0 {
+		sock.conn.SetWriteDeadline(time.Now().Add(sock.timeout))
+	} else {
+		sock.conn.SetWriteDeadline(time.Time{})
+	}
+
+	n, err := sock.conn.Write(data)
+	if err != nil {
+		C.lua_pushnil(L)
+		pushGoString(L, normalizeNetError(err))
+		return 2
+	}
+
+	C.lua_pushinteger(L, C.lua_Integer(n))
+	return 1
+}
+
+//export golapis_tcp_receive
+func golapis_tcp_receive(L *C.lua_State) C.int {
+	sock, _ := getTCPSocketFromUserdata(L, 1)
+	if sock == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "invalid socket")
+		return 2
+	}
+	if !checkTCPSocketAffinity(L, sock) {
+		return 2
+	}
+
+	if sock.closed {
+		C.lua_pushnil(L)
+		pushGoString(L, "closed")
+		return 2
+	}
+
+	if !sock.connected {
+		C.lua_pushnil(L)
+		pushGoString(L, "not connected")
+		return 2
+	}
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "receive: could not find thread context")
+		return 2
+	}
+
+	// Get required byte count
+	if C.lua_gettop(L) < 2 || C.lua_isnumber(L, 2) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "receive requires byte count argument")
+		return 2
+	}
+
+	size := int(C.lua_tonumber(L, 2))
+	if size <= 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "invalid size")
+		return 2
+	}
+
+	// Check if we already have enough buffered data
+	bufferedLen := len(sock.readBuf) - sock.readBufPos
+	if bufferedLen >= size {
+		// Return from buffer without I/O
+		data := sock.readBuf[sock.readBufPos : sock.readBufPos+size]
+		sock.readBufPos += size
+		// Compact buffer if fully consumed
+		if sock.readBufPos >= len(sock.readBuf) {
+			sock.readBuf = nil
+			sock.readBufPos = 0
+		}
+		C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&data[0])), C.size_t(len(data)))
+		return 1
+	}
+
+	// Need to read from network
+	// Copy any existing buffered data first
+	var existingData []byte
+	if bufferedLen > 0 {
+		existingData = make([]byte, bufferedLen)
+		copy(existingData, sock.readBuf[sock.readBufPos:])
+	}
+	sock.readBuf = nil
+	sock.readBufPos = 0
+
+	// Capture values for goroutine
+	timeout := sock.timeout
+	conn := sock.conn
+	gen := sock.gen
+
+	go func() {
+		result := make([]byte, 0, size)
+		if len(existingData) > 0 {
+			result = append(result, existingData...)
+		}
+
+		remaining := size - len(result)
+		buf := socketBufPool.Get().([]byte)
+		defer socketBufPool.Put(buf)
+
+		if timeout > 0 {
+			conn.SetReadDeadline(time.Now().Add(timeout))
+		} else {
+			conn.SetReadDeadline(time.Time{})
+		}
+
+		for remaining > 0 {
+			readSize := remaining
+			if readSize > len(buf) {
+				readSize = len(buf)
+			}
+
+			n, err := conn.Read(buf[:readSize])
+			if n > 0 {
+				result = append(result, buf[:n]...)
+				remaining -= n
+			}
+			if err != nil {
+				// Handle error - partial data is still an error for exact reads
+				errStr := normalizeNetError(err)
+				if err == io.EOF {
+					errStr = "closed"
+				}
+				thread.state.eventChan <- &StateEvent{
+					Type:       EventResumeThread,
+					Thread:     thread,
+					ReturnVals: []interface{}{nil, errStr},
+				}
+				return
+			}
+		}
+
+		// Successfully read exact amount
+		dataStr := string(result)
+		thread.state.eventChan <- &StateEvent{
+			Type:       EventResumeThread,
+			Thread:     thread,
+			ReturnVals: []interface{}{dataStr},
+			OnResume: func(event *StateEvent) {
+				// Check if socket was closed while we were reading
+				if sock.closed || sock.gen != gen {
+					event.ReturnVals = []interface{}{nil, "closed"}
+				}
+			},
+		}
+	}()
+
+	return C.lua_yield_wrapper(L, 0)
+}
+
+//export golapis_tcp_close
+func golapis_tcp_close(L *C.lua_State) C.int {
+	sock, _ := getTCPSocketFromUserdata(L, 1)
+	if sock == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "invalid socket")
+		return 2
+	}
+	if !checkTCPSocketAffinity(L, sock) {
+		return 2
+	}
+
+	if sock.closed {
+		C.lua_pushnil(L)
+		pushGoString(L, "already closed")
+		return 2
+	}
+
+	if sock.conn != nil {
+		sock.conn.Close()
+	}
+	sock.conn = nil
+	sock.closed = true
+	sock.connected = false
+	sock.readBuf = nil
+	sock.readBufPos = 0
+	sock.gen++
+
+	C.lua_pushinteger(L, 1)
+	return 1
+}
+
+//export golapis_tcp_setkeepalive
+func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
+	sock, _ := getTCPSocketFromUserdata(L, 1)
+	if sock == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "invalid socket")
+		return 2
+	}
+	if !checkTCPSocketAffinity(L, sock) {
+		return 2
+	}
+
+	if sock.closed {
+		C.lua_pushnil(L)
+		pushGoString(L, "closed")
+		return 2
+	}
+
+	if !sock.connected {
+		C.lua_pushnil(L)
+		pushGoString(L, "not connected")
+		return 2
+	}
+
+	// Stub implementation: just close the connection
+	// Real implementation would put the connection into a pool
+	if sock.conn != nil {
+		sock.conn.Close()
+	}
+	sock.conn = nil
+	sock.connected = false
+	sock.readBuf = nil
+	sock.readBufPos = 0
+	sock.gen++
+
+	C.lua_pushinteger(L, 1)
+	return 1
+}
+
+//export golapis_tcp_getreusedtimes
+func golapis_tcp_getreusedtimes(L *C.lua_State) C.int {
+	sock, _ := getTCPSocketFromUserdata(L, 1)
+	if sock == nil {
+		C.lua_pushinteger(L, 0)
+		return 1
+	}
+
+	C.lua_pushinteger(L, C.lua_Integer(sock.reusedTimes))
+	return 1
+}
+
+//export golapis_tcp_gc
+func golapis_tcp_gc(L *C.lua_State) C.int {
+	sock, id := getTCPSocketFromUserdata(L, 1)
+	if sock != nil {
+		if !sock.closed && sock.conn != nil {
+			sock.conn.Close()
+		}
+		sock.conn = nil
+		sock.closed = true
+		sock.connected = false
+		sock.readBuf = nil
+		sock.readBufPos = 0
+		sock.gen++
+		unregisterTCPSocket(id)
+	}
+	return 0
+}
+
+//export golapis_get_phase
+func golapis_get_phase(L *C.lua_State) C.int {
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		// Not in a thread context - return "init"
+		// This will cause pgmoon to fall back to luasocket
+		pushGoString(L, "init")
+		return 1
+	}
+
+	// In a valid thread context - return "content"
+	// Any phase other than "init" enables cosocket usage
+	pushGoString(L, "content")
+	return 1
+}

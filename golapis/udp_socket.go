@@ -61,7 +61,7 @@ var (
 	udpSocketMap       = make(map[uint64]*UDPSocket)
 	udpSocketMu        sync.Mutex
 	udpSocketIDSeq     uint64
-	unixAutobindSeq    uint64                           // counter for unique abstract socket paths
+	unixAutobindSeq    uint64                            // counter for unique abstract socket paths
 	cStrUDPMetatable   = C.CString("golapis.socket.udp") // allocated once, never freed
 	unixAutobindPrefix = fmt.Sprintf("@golapis-%d-", os.Getpid())
 )

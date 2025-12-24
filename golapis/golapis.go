@@ -73,10 +73,10 @@ type GolapisLuaState struct {
 	outputWriter  io.Writer
 	// Note: sends from the event loop goroutine can block if this buffer is full;
 	// use a non-blocking send with a goroutine fallback in that case.
-	eventChan     chan *StateEvent // all operations go through this channel
-	running       bool             // is event loop running?
-	threadWg      sync.WaitGroup   // tracks active threads for Wait()
-	stopping      atomic.Bool      // true when event loop is stopping
+	eventChan chan *StateEvent // all operations go through this channel
+	running   bool             // is event loop running?
+	threadWg  sync.WaitGroup   // tracks active threads for Wait()
+	stopping  atomic.Bool      // true when event loop is stopping
 
 	// Timer tracking
 	pendingTimers map[*PendingTimer]struct{} // set of pending timers

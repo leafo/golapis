@@ -45,6 +45,20 @@ extern int golapis_udp_close(lua_State *L);
 extern int golapis_udp_bind(lua_State *L);
 extern int golapis_udp_gc(lua_State *L);
 
+// TCP socket functions
+extern int golapis_socket_tcp_new(lua_State *L);
+extern int golapis_tcp_connect(lua_State *L);
+extern int golapis_tcp_send(lua_State *L);
+extern int golapis_tcp_receive(lua_State *L);
+extern int golapis_tcp_settimeout(lua_State *L);
+extern int golapis_tcp_close(lua_State *L);
+extern int golapis_tcp_setkeepalive(lua_State *L);
+extern int golapis_tcp_getreusedtimes(lua_State *L);
+extern int golapis_tcp_gc(lua_State *L);
+
+// Phase detection
+extern int golapis_get_phase(lua_State *L);
+
 // argf is the index where arg[0] (script name) starts
 static void create_arg_table(lua_State *L, const char **argv, int argc, int argf) {
     int i;
@@ -234,6 +248,47 @@ static int c_udp_gc_wrapper(lua_State *L) {
     return golapis_udp_gc(L);
 }
 
+// TCP socket wrappers
+static int c_socket_tcp_new_wrapper(lua_State *L) {
+    return golapis_socket_tcp_new(L);
+}
+
+static int c_tcp_connect_wrapper(lua_State *L) {
+    return golapis_tcp_connect(L);
+}
+
+static int c_tcp_send_wrapper(lua_State *L) {
+    return golapis_tcp_send(L);
+}
+
+static int c_tcp_receive_wrapper(lua_State *L) {
+    return golapis_tcp_receive(L);
+}
+
+static int c_tcp_settimeout_wrapper(lua_State *L) {
+    return golapis_tcp_settimeout(L);
+}
+
+static int c_tcp_close_wrapper(lua_State *L) {
+    return golapis_tcp_close(L);
+}
+
+static int c_tcp_setkeepalive_wrapper(lua_State *L) {
+    return golapis_tcp_setkeepalive(L);
+}
+
+static int c_tcp_getreusedtimes_wrapper(lua_State *L) {
+    return golapis_tcp_getreusedtimes(L);
+}
+
+static int c_tcp_gc_wrapper(lua_State *L) {
+    return golapis_tcp_gc(L);
+}
+
+static int c_get_phase_wrapper(lua_State *L) {
+    return golapis_get_phase(L);
+}
+
 // Main table __index metamethod
 // Stack: [golapis_table, key]
 static int c_main_index_wrapper(lua_State *L) {
@@ -298,6 +353,35 @@ static void init_udp_socket_metatable(lua_State *L) {
 
     // GC metamethod
     lua_pushcfunction(L, c_udp_gc_wrapper);
+    lua_setfield(L, -2, "__gc");
+
+    lua_pop(L, 1);  // Pop metatable (stored in registry)
+}
+
+// Initialize the TCP socket metatable in the registry (call once during setup)
+static void init_tcp_socket_metatable(lua_State *L) {
+    luaL_newmetatable(L, "golapis.socket.tcp");
+
+    // Create methods table for __index
+    lua_newtable(L);
+    lua_pushcfunction(L, c_tcp_connect_wrapper);
+    lua_setfield(L, -2, "connect");
+    lua_pushcfunction(L, c_tcp_send_wrapper);
+    lua_setfield(L, -2, "send");
+    lua_pushcfunction(L, c_tcp_receive_wrapper);
+    lua_setfield(L, -2, "receive");
+    lua_pushcfunction(L, c_tcp_settimeout_wrapper);
+    lua_setfield(L, -2, "settimeout");
+    lua_pushcfunction(L, c_tcp_close_wrapper);
+    lua_setfield(L, -2, "close");
+    lua_pushcfunction(L, c_tcp_setkeepalive_wrapper);
+    lua_setfield(L, -2, "setkeepalive");
+    lua_pushcfunction(L, c_tcp_getreusedtimes_wrapper);
+    lua_setfield(L, -2, "getreusedtimes");
+    lua_setfield(L, -2, "__index");  // metatable.__index = methods table
+
+    // GC metamethod
+    lua_pushcfunction(L, c_tcp_gc_wrapper);
     lua_setfield(L, -2, "__gc");
 
     lua_pop(L, 1);  // Pop metatable (stored in registry)
@@ -454,12 +538,19 @@ static int setup_golapis_global(lua_State *L) {
     lua_newtable(L);
     lua_pushcfunction(L, c_socket_udp_new_wrapper);
     lua_setfield(L, -2, "udp");
-    lua_setfield(L, -2, "socket");      // golapis.socket = { udp = fn }
+    lua_pushcfunction(L, c_socket_tcp_new_wrapper);
+    lua_setfield(L, -2, "tcp");
+    lua_setfield(L, -2, "socket");      // golapis.socket = { udp = fn, tcp = fn }
+
+    // Add get_phase function (for ngx compatibility)
+    lua_pushcfunction(L, c_get_phase_wrapper);
+    lua_setfield(L, -2, "get_phase");
 
     // Initialize cached metatables
     init_headers_metatable(L);
     init_main_metatable(L);
     init_udp_socket_metatable(L);
+    init_tcp_socket_metatable(L);
 
     // Apply metatable to golapis table (for status magic key)
     luaL_getmetatable(L, "golapis.main");  // Push cached metatable from registry
