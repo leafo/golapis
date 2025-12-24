@@ -21,6 +21,8 @@ extern int golapis_var_index(lua_State *L);
 extern int golapis_header_index(lua_State *L);
 extern int golapis_header_newindex(lua_State *L);
 extern int golapis_now(lua_State *L);
+extern int golapis_today(lua_State *L);
+extern int golapis_time(lua_State *L);
 extern int golapis_req_start_time(lua_State *L);
 extern int golapis_escape_uri(lua_State *L);
 extern int golapis_unescape_uri(lua_State *L);
@@ -161,6 +163,14 @@ static int c_header_newindex_wrapper(lua_State *L) {
 
 static int c_now_wrapper(lua_State *L) {
     return golapis_now(L);
+}
+
+static int c_today_wrapper(lua_State *L) {
+    return golapis_today(L);
+}
+
+static int c_time_wrapper(lua_State *L) {
+    return golapis_time(L);
 }
 
 static int c_escape_uri_wrapper(lua_State *L) {
@@ -401,6 +411,12 @@ static int setup_golapis_global(lua_State *L) {
 
     lua_pushcfunction(L, c_update_time_noop);
     lua_setfield(L, -2, "update_time");
+
+    lua_pushcfunction(L, c_today_wrapper);
+    lua_setfield(L, -2, "today");
+
+    lua_pushcfunction(L, c_time_wrapper);
+    lua_setfield(L, -2, "time");
 
     lua_pushcfunction(L, c_print_wrapper);
     lua_setfield(L, -2, "print");
@@ -759,6 +775,21 @@ func golapis_exit(L *C.lua_State) C.int {
 func golapis_now(L *C.lua_State) C.int {
 	now := float64(time.Now().UnixNano()) / 1e9
 	C.lua_pushnumber(L, C.lua_Number(now))
+	return 1
+}
+
+//export golapis_today
+func golapis_today(L *C.lua_State) C.int {
+	now := time.Now()
+	dateStr := now.Format("2006-01-02")
+	pushGoString(L, dateStr)
+	return 1
+}
+
+//export golapis_time
+func golapis_time(L *C.lua_State) C.int {
+	seconds := time.Now().Unix()
+	C.lua_pushinteger(L, C.lua_Integer(seconds))
 	return 1
 }
 
