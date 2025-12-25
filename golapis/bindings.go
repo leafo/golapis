@@ -53,6 +53,7 @@ extern int golapis_tcp_connect(lua_State *L);
 extern int golapis_tcp_send(lua_State *L);
 extern int golapis_tcp_receive(lua_State *L);
 extern int golapis_tcp_settimeout(lua_State *L);
+extern int golapis_tcp_settimeouts(lua_State *L);
 extern int golapis_tcp_close(lua_State *L);
 extern int golapis_tcp_setkeepalive(lua_State *L);
 extern int golapis_tcp_getreusedtimes(lua_State *L);
@@ -276,7 +277,19 @@ static int c_tcp_receive_wrapper(lua_State *L) {
 }
 
 static int c_tcp_settimeout_wrapper(lua_State *L) {
-    return golapis_tcp_settimeout(L);
+    int result = golapis_tcp_settimeout(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_tcp_settimeouts_wrapper(lua_State *L) {
+    int result = golapis_tcp_settimeouts(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
 }
 
 static int c_tcp_close_wrapper(lua_State *L) {
@@ -382,6 +395,8 @@ static void init_tcp_socket_metatable(lua_State *L) {
     lua_setfield(L, -2, "receive");
     lua_pushcfunction(L, c_tcp_settimeout_wrapper);
     lua_setfield(L, -2, "settimeout");
+    lua_pushcfunction(L, c_tcp_settimeouts_wrapper);
+    lua_setfield(L, -2, "settimeouts");
     lua_pushcfunction(L, c_tcp_close_wrapper);
     lua_setfield(L, -2, "close");
     lua_pushcfunction(L, c_tcp_setkeepalive_wrapper);

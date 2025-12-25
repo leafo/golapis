@@ -6,6 +6,7 @@ package golapis
 import "C"
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -21,13 +22,15 @@ import (
 
 // TCPSocket represents a TCP cosocket compatible with ngx.socket.tcp
 type TCPSocket struct {
-	conn        net.Conn      // *net.TCPConn or *net.UnixConn
-	timeout     time.Duration // per-socket timeout (0 = no timeout)
-	connected   bool          // true after successful connect
-	closed      bool          // true after close() called
-	isUnix      bool          // true for unix:/ domain sockets
-	gen         uint64        // increments to invalidate in-flight async operations
-	ownerThread *C.lua_State  // coroutine that created this socket (for request affinity)
+	conn           net.Conn      // *net.TCPConn or *net.UnixConn
+	connectTimeout time.Duration // per-socket connect timeout (0 = no timeout)
+	readTimeout    time.Duration // per-socket read timeout (0 = no timeout)
+	writeTimeout   time.Duration // per-socket write timeout (0 = no timeout)
+	connected      bool          // true after successful connect
+	closed         bool          // true after close() called
+	isUnix         bool          // true for unix:/ domain sockets
+	gen            uint64        // increments to invalidate in-flight async operations
+	ownerThread    *C.lua_State  // coroutine that created this socket (for request affinity)
 
 	// TCP-specific: internal read buffer for exact byte reads
 	readBuf    []byte
@@ -35,6 +38,11 @@ type TCPSocket struct {
 
 	// Connection pooling tracking (stub for now)
 	reusedTimes int // number of times retrieved from pool (always 0 for now)
+
+	// Busy state tracking (OpenResty-style)
+	connecting bool
+	reading    bool
+	writing    bool
 }
 
 // TCP socket registry - maps socket ID to Go object
@@ -87,6 +95,25 @@ func checkTCPSocketAffinity(L *C.lua_State, sock *TCPSocket) bool {
 	return true
 }
 
+func checkTCPSocketBusy(L *C.lua_State, sock *TCPSocket, checkConnect, checkRead, checkWrite bool) bool {
+	if checkConnect && sock.connecting {
+		C.lua_pushnil(L)
+		pushGoString(L, "socket busy connecting")
+		return false
+	}
+	if checkRead && sock.reading {
+		C.lua_pushnil(L)
+		pushGoString(L, "socket busy reading")
+		return false
+	}
+	if checkWrite && sock.writing {
+		C.lua_pushnil(L)
+		pushGoString(L, "socket busy writing")
+		return false
+	}
+	return true
+}
+
 func consumeLineFromBuffer(sock *TCPSocket) (string, bool) {
 	// OpenResty line-mode semantics: stop at LF, strip any CR bytes in the line.
 	if sock.readBufPos >= len(sock.readBuf) {
@@ -128,8 +155,10 @@ func consumeLineFromBuffer(sock *TCPSocket) (string, bool) {
 //export golapis_socket_tcp_new
 func golapis_socket_tcp_new(L *C.lua_State) C.int {
 	sock := &TCPSocket{
-		timeout:     0,
-		ownerThread: L,
+		connectTimeout: 0,
+		readTimeout:    0,
+		writeTimeout:   0,
+		ownerThread:    L,
 	}
 	id := registerTCPSocket(sock)
 
@@ -154,13 +183,44 @@ func golapis_tcp_settimeout(L *C.lua_State) C.int {
 		return 2
 	}
 
-	if C.lua_gettop(L) < 2 || C.lua_isnumber(L, 2) == 0 {
-		return 0
+	n := int(C.lua_gettop(L))
+	if n != 2 {
+		pushGoString(L, fmt.Sprintf("golapis.socket settimeout: expecting 2 arguments (including the object) but seen %d", n))
+		return -1
 	}
 
 	ms := float64(C.lua_tonumber(L, 2))
-	sock.timeout = time.Duration(ms) * time.Millisecond
+	timeout := time.Duration(ms) * time.Millisecond
+	sock.connectTimeout = timeout
+	sock.readTimeout = timeout
+	sock.writeTimeout = timeout
 	return 0 // settimeout returns nothing per OpenResty spec
+}
+
+//export golapis_tcp_settimeouts
+func golapis_tcp_settimeouts(L *C.lua_State) C.int {
+	sock, _ := getTCPSocketFromUserdata(L, 1)
+	if sock == nil {
+		return 0
+	}
+	if !checkTCPSocketAffinity(L, sock) {
+		return 2
+	}
+
+	n := int(C.lua_gettop(L))
+	if n != 4 {
+		pushGoString(L, fmt.Sprintf("golapis.socket settimeouts: expecting 4 arguments (including the object) but seen %d", n))
+		return -1
+	}
+
+	connectMs := float64(C.lua_tonumber(L, 2))
+	sendMs := float64(C.lua_tonumber(L, 3))
+	readMs := float64(C.lua_tonumber(L, 4))
+
+	sock.connectTimeout = time.Duration(connectMs) * time.Millisecond
+	sock.writeTimeout = time.Duration(sendMs) * time.Millisecond
+	sock.readTimeout = time.Duration(readMs) * time.Millisecond
+	return 0
 }
 
 //export golapis_tcp_connect
@@ -178,6 +238,10 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 	if sock.closed {
 		C.lua_pushnil(L)
 		pushGoString(L, "closed")
+		return 2
+	}
+
+	if !checkTCPSocketBusy(L, sock, true, true, true) {
 		return 2
 	}
 
@@ -210,9 +274,10 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 	// Unix domain socket: "unix:/path"
 	if strings.HasPrefix(arg1, "unix:") {
 		path := arg1[5:]
-		timeout := sock.timeout
+		timeout := sock.connectTimeout
 		gen := sock.gen
 
+		sock.connecting = true
 		go func() {
 			var conn net.Conn
 			var err error
@@ -228,6 +293,9 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 					Type:       EventResumeThread,
 					Thread:     thread,
 					ReturnVals: []interface{}{nil, normalizeNetError(err)},
+					OnResume: func(event *StateEvent) {
+						sock.connecting = false
+					},
 				}
 				return
 			}
@@ -237,6 +305,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 				Thread:     thread,
 				ReturnVals: []interface{}{1},
 				OnResume: func(event *StateEvent) {
+					sock.connecting = false
 					if sock.closed || sock.gen != gen {
 						if conn != nil {
 							conn.Close()
@@ -270,9 +339,10 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 
 	port := int(portNum)
 	host := arg1
-	timeout := sock.timeout
+	timeout := sock.connectTimeout
 	gen := sock.gen
 
+	sock.connecting = true
 	go func() {
 		var conn net.Conn
 		var err error
@@ -289,6 +359,9 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 				Type:       EventResumeThread,
 				Thread:     thread,
 				ReturnVals: []interface{}{nil, normalizeNetError(err)},
+				OnResume: func(event *StateEvent) {
+					sock.connecting = false
+				},
 			}
 			return
 		}
@@ -298,6 +371,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			Thread:     thread,
 			ReturnVals: []interface{}{1},
 			OnResume: func(event *StateEvent) {
+				sock.connecting = false
 				if sock.closed || sock.gen != gen {
 					conn.Close()
 					event.ReturnVals = []interface{}{nil, "closed"}
@@ -336,11 +410,20 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 		return 2
 	}
 
+	if !checkTCPSocketBusy(L, sock, true, false, true) {
+		return 2
+	}
+
 	if C.lua_gettop(L) < 2 {
 		C.lua_pushnil(L)
 		pushGoString(L, "send requires data argument")
 		return 2
 	}
+
+	sock.writing = true
+	defer func() {
+		sock.writing = false
+	}()
 
 	var data []byte
 	ok, errMsg := appendLuaValue(L, 2, &data, false)
@@ -351,8 +434,8 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 	}
 
 	// Set write deadline if timeout is set
-	if sock.timeout > 0 {
-		sock.conn.SetWriteDeadline(time.Now().Add(sock.timeout))
+	if sock.writeTimeout > 0 {
+		sock.conn.SetWriteDeadline(time.Now().Add(sock.writeTimeout))
 	} else {
 		sock.conn.SetWriteDeadline(time.Time{})
 	}
@@ -389,6 +472,10 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 	if !sock.connected {
 		C.lua_pushnil(L)
 		pushGoString(L, "not connected")
+		return 2
+	}
+
+	if !checkTCPSocketBusy(L, sock, true, true, false) {
 		return 2
 	}
 
@@ -471,10 +558,11 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 	sock.readBufPos = 0
 
 	// Capture values for goroutine
-	timeout := sock.timeout
+	timeout := sock.readTimeout
 	conn := sock.conn
 	gen := sock.gen
 
+	sock.reading = true
 	switch mode {
 	case "size":
 		go func() {
@@ -513,6 +601,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						Type:       EventResumeThread,
 						Thread:     thread,
 						ReturnVals: []interface{}{nil, errStr, string(result)},
+						OnResume: func(event *StateEvent) {
+							sock.reading = false
+						},
 					}
 					return
 				}
@@ -524,6 +615,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 				Thread:     thread,
 				ReturnVals: []interface{}{dataStr},
 				OnResume: func(event *StateEvent) {
+					sock.reading = false
 					if sock.closed || sock.gen != gen {
 						event.ReturnVals = []interface{}{nil, "closed"}
 					}
@@ -558,6 +650,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 							Thread:     thread,
 							ReturnVals: []interface{}{string(result)},
 							OnResume: func(event *StateEvent) {
+								sock.reading = false
 								if sock.closed || sock.gen != gen {
 									event.ReturnVals = []interface{}{nil, "closed"}
 								}
@@ -571,6 +664,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						Type:       EventResumeThread,
 						Thread:     thread,
 						ReturnVals: []interface{}{nil, errStr, string(result)},
+						OnResume: func(event *StateEvent) {
+							sock.reading = false
+						},
 					}
 					return
 				}
@@ -616,6 +712,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 							Thread:     thread,
 							ReturnVals: []interface{}{string(line)},
 							OnResume: func(event *StateEvent) {
+								sock.reading = false
 								if sock.closed || sock.gen != gen {
 									event.ReturnVals = []interface{}{nil, "closed"}
 									return
@@ -653,6 +750,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						Type:       EventResumeThread,
 						Thread:     thread,
 						ReturnVals: []interface{}{nil, errStr, string(partial)},
+						OnResume: func(event *StateEvent) {
+							sock.reading = false
+						},
 					}
 					return
 				}
@@ -681,6 +781,10 @@ func golapis_tcp_close(L *C.lua_State) C.int {
 		return 2
 	}
 
+	if !checkTCPSocketBusy(L, sock, true, true, true) {
+		return 2
+	}
+
 	if sock.conn != nil {
 		sock.conn.Close()
 	}
@@ -689,6 +793,9 @@ func golapis_tcp_close(L *C.lua_State) C.int {
 	sock.connected = false
 	sock.readBuf = nil
 	sock.readBufPos = 0
+	sock.connecting = false
+	sock.reading = false
+	sock.writing = false
 	sock.gen++
 
 	C.lua_pushinteger(L, 1)
@@ -719,6 +826,10 @@ func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
 		return 2
 	}
 
+	if !checkTCPSocketBusy(L, sock, true, true, true) {
+		return 2
+	}
+
 	// Stub implementation: just close the connection
 	// Real implementation would put the connection into a pool
 	if sock.conn != nil {
@@ -728,6 +839,9 @@ func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
 	sock.connected = false
 	sock.readBuf = nil
 	sock.readBufPos = 0
+	sock.connecting = false
+	sock.reading = false
+	sock.writing = false
 	sock.gen++
 
 	C.lua_pushinteger(L, 1)
@@ -758,6 +872,9 @@ func golapis_tcp_gc(L *C.lua_State) C.int {
 		sock.connected = false
 		sock.readBuf = nil
 		sock.readBufPos = 0
+		sock.connecting = false
+		sock.reading = false
+		sock.writing = false
 		sock.gen++
 		unregisterTCPSocket(id)
 	}

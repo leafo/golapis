@@ -56,6 +56,7 @@ func TestTCPSocketMethods(t *testing.T) {
 		golapis.say("send=", type(sock.send))
 		golapis.say("receive=", type(sock.receive))
 		golapis.say("settimeout=", type(sock.settimeout))
+		golapis.say("settimeouts=", type(sock.settimeouts))
 		golapis.say("close=", type(sock.close))
 		golapis.say("setkeepalive=", type(sock.setkeepalive))
 		golapis.say("getreusedtimes=", type(sock.getreusedtimes))
@@ -70,6 +71,7 @@ func TestTCPSocketMethods(t *testing.T) {
 		"send=function",
 		"receive=function",
 		"settimeout=function",
+		"settimeouts=function",
 		"close=function",
 		"setkeepalive=function",
 		"getreusedtimes=function",
@@ -85,6 +87,21 @@ func TestTCPSocketSettimeout(t *testing.T) {
 	code := `
 		local sock = golapis.socket.tcp()
 		sock:settimeout(1000)
+		golapis.say("ok")
+	`
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "ok") {
+		t.Errorf("expected 'ok', got: %q", output)
+	}
+}
+
+func TestTCPSocketSettimeouts(t *testing.T) {
+	code := `
+		local sock = golapis.socket.tcp()
+		sock:settimeouts(1000, 1000, 1000)
 		golapis.say("ok")
 	`
 	output, err := runTCPTest(t, code)
