@@ -185,6 +185,139 @@ func TestTCPSocketReceiveExactBytes(t *testing.T) {
 	}
 }
 
+func TestTCPSocketReceiveZeroBytes(t *testing.T) {
+	// Test that receive(0) returns empty string immediately (OpenResty parity)
+	serverAddr, cleanup := startTCPEchoServer(t)
+	defer cleanup()
+
+	code := `
+		local sock = golapis.socket.tcp()
+		sock:settimeout(1000)
+		local ok, err = sock:connect("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("connect error: ", err)
+			return
+		end
+
+		local data, err = sock:receive(0)
+		if data == nil then
+			golapis.say("receive error: ", err)
+			return
+		end
+		golapis.say("data: [", data, "] len=", #data)
+		sock:close()
+	`
+
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "data: [] len=0") {
+		t.Errorf("expected 'data: [] len=0', got: %q", output)
+	}
+}
+
+func TestTCPSocketReceiveLineDefault(t *testing.T) {
+	serverAddr, cleanup := startTCPWriteServer(t, []byte("hello\r\nworld\r\n"))
+	defer cleanup()
+
+	code := `
+		local sock = golapis.socket.tcp()
+		sock:settimeout(1000)
+		local ok, err = sock:connect("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("connect error: ", err)
+			return
+		end
+
+		local line1, err = sock:receive()
+		if not line1 then
+			golapis.say("receive1 error: ", err)
+			return
+		end
+		golapis.say("line1: ", line1)
+
+		local line2, err = sock:receive("*l")
+		if not line2 then
+			golapis.say("receive2 error: ", err)
+			return
+		end
+		golapis.say("line2: ", line2)
+	`
+
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "line1: hello") {
+		t.Errorf("expected 'line1: hello', got: %q", output)
+	}
+	if !strings.Contains(output, "line2: world") {
+		t.Errorf("expected 'line2: world', got: %q", output)
+	}
+}
+
+func TestTCPSocketReceiveAll(t *testing.T) {
+	serverAddr, cleanup := startTCPWriteServer(t, []byte("hello world"))
+	defer cleanup()
+
+	code := `
+		local sock = golapis.socket.tcp()
+		sock:settimeout(1000)
+		local ok, err = sock:connect("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("connect error: ", err)
+			return
+		end
+
+		local data, err = sock:receive("*a")
+		if not data then
+			golapis.say("receive error: ", err)
+			return
+		end
+		golapis.say("data: ", data)
+	`
+
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "data: hello world") {
+		t.Errorf("expected 'data: hello world', got: %q", output)
+	}
+}
+
+func TestTCPSocketReceiveNumericStringSize(t *testing.T) {
+	serverAddr, cleanup := startTCPEchoServer(t)
+	defer cleanup()
+
+	code := `
+		local sock = golapis.socket.tcp()
+		sock:settimeout(1000)
+		local ok, err = sock:connect("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("connect error: ", err)
+			return
+		end
+
+		sock:send("hello world")
+		local data, err = sock:receive("5")
+		if not data then
+			golapis.say("receive error: ", err)
+			return
+		end
+		golapis.say("data: ", data)
+	`
+
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "data: hello") {
+		t.Errorf("expected 'data: hello', got: %q", output)
+	}
+}
+
 func TestTCPSocketTimeout(t *testing.T) {
 	// Start a server that accepts but doesn't send
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -717,6 +850,36 @@ func startTCPEchoServer(t *testing.T) (*net.TCPAddr, func()) {
 			go func(c net.Conn) {
 				defer c.Close()
 				io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	cleanup := func() {
+		listener.Close()
+	}
+
+	return serverAddr, cleanup
+}
+
+func startTCPWriteServer(t *testing.T, payload []byte) (*net.TCPAddr, func()) {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+
+	serverAddr := listener.Addr().(*net.TCPAddr)
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				c.Write(payload)
 			}(conn)
 		}
 	}()

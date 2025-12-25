@@ -5,6 +5,7 @@ package golapis
 */
 import "C"
 import (
+	"bytes"
 	"io"
 	"net"
 	"strconv"
@@ -84,6 +85,40 @@ func checkTCPSocketAffinity(L *C.lua_State, sock *TCPSocket) bool {
 		return false
 	}
 	return true
+}
+
+func consumeLineFromBuffer(sock *TCPSocket) (string, bool) {
+	// OpenResty line-mode semantics: stop at LF, strip any CR bytes in the line.
+	if sock.readBufPos >= len(sock.readBuf) {
+		sock.readBuf = nil
+		sock.readBufPos = 0
+		return "", false
+	}
+
+	data := sock.readBuf[sock.readBufPos:]
+	lfIndex := bytes.IndexByte(data, '\n')
+	if lfIndex == -1 {
+		return "", false
+	}
+
+	line := data[:lfIndex]
+	sock.readBufPos += lfIndex + 1
+	if sock.readBufPos >= len(sock.readBuf) {
+		sock.readBuf = nil
+		sock.readBufPos = 0
+	}
+
+	if bytes.IndexByte(line, '\r') == -1 {
+		return string(line), true
+	}
+
+	filtered := make([]byte, 0, len(line))
+	for _, b := range line {
+		if b != '\r' {
+			filtered = append(filtered, b)
+		}
+	}
+	return string(filtered), true
 }
 
 // =============================================================================
@@ -364,37 +399,69 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 		return 2
 	}
 
-	// Get required byte count
-	if C.lua_gettop(L) < 2 || C.lua_isnumber(L, 2) == 0 {
-		C.lua_pushnil(L)
-		pushGoString(L, "receive requires byte count argument")
-		return 2
-	}
+	argCount := C.lua_gettop(L)
+	mode := "line"
+	var size int
 
-	size := int(C.lua_tonumber(L, 2))
-	if size <= 0 {
-		C.lua_pushnil(L)
-		pushGoString(L, "invalid size")
-		return 2
-	}
-
-	// Check if we already have enough buffered data
-	bufferedLen := len(sock.readBuf) - sock.readBufPos
-	if bufferedLen >= size {
-		// Return from buffer without I/O
-		data := sock.readBuf[sock.readBufPos : sock.readBufPos+size]
-		sock.readBufPos += size
-		// Compact buffer if fully consumed
-		if sock.readBufPos >= len(sock.readBuf) {
-			sock.readBuf = nil
-			sock.readBufPos = 0
+	if argCount >= 2 {
+		if C.lua_isnumber(L, 2) != 0 {
+			size = int(C.lua_tonumber(L, 2))
+			if size < 0 {
+				C.lua_pushnil(L)
+				pushGoString(L, "bad number argument")
+				return 2
+			}
+			if size == 0 {
+				pushGoString(L, "")
+				return 1
+			}
+			mode = "size"
+		} else if C.lua_isstring(L, 2) != 0 {
+			pattern := C.GoString(C.lua_tostring_wrapper(L, 2))
+			switch pattern {
+			case "*a":
+				mode = "all"
+			case "*l":
+				mode = "line"
+			default:
+				C.lua_pushnil(L)
+				pushGoString(L, "bad pattern")
+				return 2
+			}
+		} else {
+			C.lua_pushnil(L)
+			pushGoString(L, "bad argument")
+			return 2
 		}
-		C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&data[0])), C.size_t(len(data)))
-		return 1
+	}
+
+	if mode == "line" {
+		if line, ok := consumeLineFromBuffer(sock); ok {
+			pushGoString(L, line)
+			return 1
+		}
+	}
+
+	if mode == "size" {
+		// Check if we already have enough buffered data
+		bufferedLen := len(sock.readBuf) - sock.readBufPos
+		if bufferedLen >= size {
+			// Return from buffer without I/O
+			data := sock.readBuf[sock.readBufPos : sock.readBufPos+size]
+			sock.readBufPos += size
+			// Compact buffer if fully consumed
+			if sock.readBufPos >= len(sock.readBuf) {
+				sock.readBuf = nil
+				sock.readBufPos = 0
+			}
+			C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&data[0])), C.size_t(len(data)))
+			return 1
+		}
 	}
 
 	// Need to read from network
 	// Copy any existing buffered data first
+	bufferedLen := len(sock.readBuf) - sock.readBufPos
 	var existingData []byte
 	if bufferedLen > 0 {
 		existingData = make([]byte, bufferedLen)
@@ -408,62 +475,190 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 	conn := sock.conn
 	gen := sock.gen
 
-	go func() {
-		result := make([]byte, 0, size)
-		if len(existingData) > 0 {
-			result = append(result, existingData...)
-		}
-
-		remaining := size - len(result)
-		buf := socketBufPool.Get().([]byte)
-		defer socketBufPool.Put(buf)
-
-		if timeout > 0 {
-			conn.SetReadDeadline(time.Now().Add(timeout))
-		} else {
-			conn.SetReadDeadline(time.Time{})
-		}
-
-		for remaining > 0 {
-			readSize := remaining
-			if readSize > len(buf) {
-				readSize = len(buf)
+	switch mode {
+	case "size":
+		go func() {
+			result := make([]byte, 0, size)
+			if len(existingData) > 0 {
+				result = append(result, existingData...)
 			}
 
-			n, err := conn.Read(buf[:readSize])
-			if n > 0 {
-				result = append(result, buf[:n]...)
-				remaining -= n
-			}
-			if err != nil {
-				// Handle error - partial data is still an error for exact reads
-				errStr := normalizeNetError(err)
-				if err == io.EOF {
-					errStr = "closed"
-				}
-				thread.state.eventChan <- &StateEvent{
-					Type:       EventResumeThread,
-					Thread:     thread,
-					ReturnVals: []interface{}{nil, errStr},
-				}
-				return
-			}
-		}
+			remaining := size - len(result)
+			buf := socketBufPool.Get().([]byte)
+			defer socketBufPool.Put(buf)
 
-		// Successfully read exact amount
-		dataStr := string(result)
-		thread.state.eventChan <- &StateEvent{
-			Type:       EventResumeThread,
-			Thread:     thread,
-			ReturnVals: []interface{}{dataStr},
-			OnResume: func(event *StateEvent) {
-				// Check if socket was closed while we were reading
-				if sock.closed || sock.gen != gen {
-					event.ReturnVals = []interface{}{nil, "closed"}
+			if timeout > 0 {
+				conn.SetReadDeadline(time.Now().Add(timeout))
+			} else {
+				conn.SetReadDeadline(time.Time{})
+			}
+
+			for remaining > 0 {
+				readSize := remaining
+				if readSize > len(buf) {
+					readSize = len(buf)
 				}
-			},
-		}
-	}()
+
+				n, err := conn.Read(buf[:readSize])
+				if n > 0 {
+					result = append(result, buf[:n]...)
+					remaining -= n
+				}
+				if err != nil {
+					errStr := normalizeNetError(err)
+					if err == io.EOF {
+						errStr = "closed"
+					}
+					thread.state.eventChan <- &StateEvent{
+						Type:       EventResumeThread,
+						Thread:     thread,
+						ReturnVals: []interface{}{nil, errStr, string(result)},
+					}
+					return
+				}
+			}
+
+			dataStr := string(result)
+			thread.state.eventChan <- &StateEvent{
+				Type:       EventResumeThread,
+				Thread:     thread,
+				ReturnVals: []interface{}{dataStr},
+				OnResume: func(event *StateEvent) {
+					if sock.closed || sock.gen != gen {
+						event.ReturnVals = []interface{}{nil, "closed"}
+					}
+				},
+			}
+		}()
+	case "all":
+		go func() {
+			result := make([]byte, 0)
+			if len(existingData) > 0 {
+				result = append(result, existingData...)
+			}
+
+			buf := socketBufPool.Get().([]byte)
+			defer socketBufPool.Put(buf)
+
+			if timeout > 0 {
+				conn.SetReadDeadline(time.Now().Add(timeout))
+			} else {
+				conn.SetReadDeadline(time.Time{})
+			}
+
+			for {
+				n, err := conn.Read(buf)
+				if n > 0 {
+					result = append(result, buf[:n]...)
+				}
+				if err != nil {
+					if err == io.EOF {
+						thread.state.eventChan <- &StateEvent{
+							Type:       EventResumeThread,
+							Thread:     thread,
+							ReturnVals: []interface{}{string(result)},
+							OnResume: func(event *StateEvent) {
+								if sock.closed || sock.gen != gen {
+									event.ReturnVals = []interface{}{nil, "closed"}
+								}
+							},
+						}
+						return
+					}
+
+					errStr := normalizeNetError(err)
+					thread.state.eventChan <- &StateEvent{
+						Type:       EventResumeThread,
+						Thread:     thread,
+						ReturnVals: []interface{}{nil, errStr, string(result)},
+					}
+					return
+				}
+			}
+		}()
+	case "line":
+		go func() {
+			lineBuf := make([]byte, 0)
+			if len(existingData) > 0 {
+				lineBuf = append(lineBuf, existingData...)
+			}
+
+			buf := socketBufPool.Get().([]byte)
+			defer socketBufPool.Put(buf)
+
+			if timeout > 0 {
+				conn.SetReadDeadline(time.Now().Add(timeout))
+			} else {
+				conn.SetReadDeadline(time.Time{})
+			}
+
+			for {
+				n, err := conn.Read(buf)
+				if n > 0 {
+					data := buf[:n]
+					if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
+						lineBuf = append(lineBuf, data[:idx]...)
+						remainder := data[idx+1:]
+
+						line := lineBuf
+						if bytes.IndexByte(line, '\r') != -1 {
+							filtered := make([]byte, 0, len(line))
+							for _, b := range line {
+								if b != '\r' {
+									filtered = append(filtered, b)
+								}
+							}
+							line = filtered
+						}
+
+						thread.state.eventChan <- &StateEvent{
+							Type:       EventResumeThread,
+							Thread:     thread,
+							ReturnVals: []interface{}{string(line)},
+							OnResume: func(event *StateEvent) {
+								if sock.closed || sock.gen != gen {
+									event.ReturnVals = []interface{}{nil, "closed"}
+									return
+								}
+								if len(remainder) > 0 {
+									sock.readBuf = append([]byte(nil), remainder...)
+									sock.readBufPos = 0
+								} else {
+									sock.readBuf = nil
+									sock.readBufPos = 0
+								}
+							},
+						}
+						return
+					}
+					lineBuf = append(lineBuf, data...)
+				}
+
+				if err != nil {
+					errStr := normalizeNetError(err)
+					if err == io.EOF {
+						errStr = "closed"
+					}
+					partial := lineBuf
+					if bytes.IndexByte(partial, '\r') != -1 {
+						filtered := make([]byte, 0, len(partial))
+						for _, b := range partial {
+							if b != '\r' {
+								filtered = append(filtered, b)
+							}
+						}
+						partial = filtered
+					}
+					thread.state.eventChan <- &StateEvent{
+						Type:       EventResumeThread,
+						Thread:     thread,
+						ReturnVals: []interface{}{nil, errStr, string(partial)},
+					}
+					return
+				}
+			}
+		}()
+	}
 
 	return C.lua_yield_wrapper(L, 0)
 }
