@@ -34,7 +34,7 @@ clean:
 
 test: luajit
 	@echo "Running tests..."
-	CGO_ENABLED=1 go test ./golapis -v
+	CGO_ENABLED=1 go test ./golapis -v -timeout 5s
 
 install: luajit
 	@echo "Installing $(BINARY_NAME)..."
