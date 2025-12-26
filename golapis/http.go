@@ -26,6 +26,34 @@ func DefaultHTTPServerConfig() *HTTPServerConfig {
 	}
 }
 
+// HTTPHandler returns an http.Handler that executes the preloaded entrypoint for each request.
+// The GolapisLuaState must have Start() called and an entrypoint preloaded before use.
+func (gls *GolapisLuaState) HTTPHandler(config *HTTPServerConfig) http.Handler {
+	if config == nil {
+		config = DefaultHTTPServerConfig()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := NewGolapisRequest(r)
+		req.maxBodySize = config.ClientMaxBodySize
+		wrappedWriter := req.WrapResponseWriter(w)
+
+		resp := make(chan *StateResponse, 1)
+		gls.eventChan <- &StateEvent{
+			Type:         EventRunEntryPoint,
+			OutputWriter: wrappedWriter,
+			Request:      req,
+			Response:     resp,
+		}
+
+		result := <-resp
+		if result.Error != nil {
+			http.Error(w, result.Error.Error(), http.StatusInternalServerError)
+			return
+		}
+		req.FlushHeaders(w)
+	})
+}
+
 // StartHTTPServer starts an HTTP server that executes the given Lua script for each request
 // Uses a single shared GolapisLuaState for all requests with cooperative scheduling
 func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
@@ -56,41 +84,12 @@ func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 	// Setup graceful shutdown
 	setupGracefulShutdown(lua)
 
+	// Create handler with logging wrapper
+	handler := lua.HTTPHandler(config)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Create request context and wrap the response writer
-		req := NewGolapisRequest(r)
-		req.maxBodySize = config.ClientMaxBodySize
-		wrappedWriter := req.WrapResponseWriter(w)
-
-		// Create response channel for this request
-		resp := make(chan *StateResponse, 1)
-
-		// Send request to shared Lua state's event loop
-		lua.eventChan <- &StateEvent{
-			Type:         EventRunEntryPoint,
-			OutputWriter: wrappedWriter,
-			Request:      req,
-			Response:     resp,
-		}
-
-		// Wait for request completion
-		result := <-resp
-
-		if result.Error != nil {
-			http.Error(w, result.Error.Error(), http.StatusInternalServerError)
-			logHTTPRequest(r, req.StartTime(), http.StatusInternalServerError, 0)
-			return
-		}
-
-		// Apply response headers if not already sent (handles no-body case)
-		req.FlushHeaders(w)
-
-		// Log with actual status code
-		status := req.ResponseStatus
-		if status == 0 {
-			status = http.StatusOK
-		}
-		logHTTPRequest(r, req.StartTime(), status, 0)
+		startTime := time.Now()
+		handler.ServeHTTP(w, r)
+		logHTTPRequest(r, startTime, http.StatusOK, 0)
 	})
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))

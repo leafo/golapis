@@ -607,19 +607,33 @@ func (gls *GolapisLuaState) loadMoonFile(filename string) error {
 	return nil
 }
 
+// storeEntryPoint stores the function on top of the stack as the entrypoint.
+// Assumes a compiled function is already on the stack.
+func (gls *GolapisLuaState) storeEntryPoint() {
+	if gls.entrypointRef != 0 {
+		C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.entrypointRef)
+		gls.entrypointRef = 0
+	}
+	gls.entrypointRef = C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
+}
+
 // PreloadEntryPointFile loads a Lua or MoonScript file and stores the compiled function in the registry.
 // This should be called once at startup for HTTP mode to avoid reloading per-request.
 func (gls *GolapisLuaState) PreloadEntryPointFile(filename string) error {
 	if err := gls.loadFile(filename); err != nil {
 		return err
 	}
+	gls.storeEntryPoint()
+	return nil
+}
 
-	// Store function in registry (pops from stack)
-	if gls.entrypointRef != 0 {
-		C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.entrypointRef)
-		gls.entrypointRef = 0
+// PreloadEntryPointString loads a Lua code string and stores the compiled function in the registry.
+// This should be called once at startup for HTTP mode to avoid reloading per-request.
+func (gls *GolapisLuaState) PreloadEntryPointString(code string) error {
+	if err := gls.loadString(code); err != nil {
+		return err
 	}
-	gls.entrypointRef = C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
+	gls.storeEntryPoint()
 	return nil
 }
 
