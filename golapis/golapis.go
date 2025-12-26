@@ -41,6 +41,10 @@ static void pop_stack(lua_State *L, int n) {
     lua_pop(L, n);
 }
 
+static void flush_stdout() {
+    fflush(stdout);
+}
+
 */
 import "C"
 import (
@@ -178,6 +182,7 @@ func (gls *GolapisLuaState) Close() {
 		}
 		gls.unregisterState()
 		C.lua_close(gls.luaState)
+		C.flush_stdout() // Go exit doesn't flush C stdout buffers
 		gls.luaState = nil
 	}
 }
