@@ -292,7 +292,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 				thread.state.eventChan <- &StateEvent{
 					Type:       EventResumeThread,
 					Thread:     thread,
-					ReturnVals: []interface{}{nil, normalizeNetError(err)},
+					ResumeValues: []interface{}{nil, normalizeNetError(err)},
 					OnResume: func(event *StateEvent) {
 						sock.connecting = false
 					},
@@ -303,14 +303,14 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:       EventResumeThread,
 				Thread:     thread,
-				ReturnVals: []interface{}{1},
+				ResumeValues: []interface{}{1},
 				OnResume: func(event *StateEvent) {
 					sock.connecting = false
 					if sock.closed || sock.gen != gen {
 						if conn != nil {
 							conn.Close()
 						}
-						event.ReturnVals = []interface{}{nil, "closed"}
+						event.ResumeValues = []interface{}{nil, "closed"}
 						return
 					}
 					sock.conn = conn
@@ -358,7 +358,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:       EventResumeThread,
 				Thread:     thread,
-				ReturnVals: []interface{}{nil, normalizeNetError(err)},
+				ResumeValues: []interface{}{nil, normalizeNetError(err)},
 				OnResume: func(event *StateEvent) {
 					sock.connecting = false
 				},
@@ -369,12 +369,12 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:       EventResumeThread,
 			Thread:     thread,
-			ReturnVals: []interface{}{1},
+			ResumeValues: []interface{}{1},
 			OnResume: func(event *StateEvent) {
 				sock.connecting = false
 				if sock.closed || sock.gen != gen {
 					conn.Close()
-					event.ReturnVals = []interface{}{nil, "closed"}
+					event.ResumeValues = []interface{}{nil, "closed"}
 					return
 				}
 				sock.conn = conn
@@ -600,7 +600,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 					thread.state.eventChan <- &StateEvent{
 						Type:       EventResumeThread,
 						Thread:     thread,
-						ReturnVals: []interface{}{nil, errStr, string(result)},
+						ResumeValues: []interface{}{nil, errStr, string(result)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
 						},
@@ -613,11 +613,11 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:       EventResumeThread,
 				Thread:     thread,
-				ReturnVals: []interface{}{dataStr},
+				ResumeValues: []interface{}{dataStr},
 				OnResume: func(event *StateEvent) {
 					sock.reading = false
 					if sock.closed || sock.gen != gen {
-						event.ReturnVals = []interface{}{nil, "closed"}
+						event.ResumeValues = []interface{}{nil, "closed"}
 					}
 				},
 			}
@@ -648,11 +648,11 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						thread.state.eventChan <- &StateEvent{
 							Type:       EventResumeThread,
 							Thread:     thread,
-							ReturnVals: []interface{}{string(result)},
+							ResumeValues: []interface{}{string(result)},
 							OnResume: func(event *StateEvent) {
 								sock.reading = false
 								if sock.closed || sock.gen != gen {
-									event.ReturnVals = []interface{}{nil, "closed"}
+									event.ResumeValues = []interface{}{nil, "closed"}
 								}
 							},
 						}
@@ -663,7 +663,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 					thread.state.eventChan <- &StateEvent{
 						Type:       EventResumeThread,
 						Thread:     thread,
-						ReturnVals: []interface{}{nil, errStr, string(result)},
+						ResumeValues: []interface{}{nil, errStr, string(result)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
 						},
@@ -710,11 +710,11 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						thread.state.eventChan <- &StateEvent{
 							Type:       EventResumeThread,
 							Thread:     thread,
-							ReturnVals: []interface{}{string(line)},
+							ResumeValues: []interface{}{string(line)},
 							OnResume: func(event *StateEvent) {
 								sock.reading = false
 								if sock.closed || sock.gen != gen {
-									event.ReturnVals = []interface{}{nil, "closed"}
+									event.ResumeValues = []interface{}{nil, "closed"}
 									return
 								}
 								if len(remainder) > 0 {
@@ -749,7 +749,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 					thread.state.eventChan <- &StateEvent{
 						Type:       EventResumeThread,
 						Thread:     thread,
-						ReturnVals: []interface{}{nil, errStr, string(partial)},
+						ResumeValues: []interface{}{nil, errStr, string(partial)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
 						},

@@ -783,7 +783,7 @@ func golapis_http_request(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:       EventResumeThread,
 			Thread:     thread,
-			ReturnVals: returnVals,
+			ResumeValues: returnVals,
 			Response:   nil,
 		}
 	}()
@@ -824,7 +824,7 @@ func golapis_sleep(L *C.lua_State) C.int {
 		event := &StateEvent{
 			Type:       EventResumeThread,
 			Thread:     thread,
-			ReturnVals: nil, // sleep returns nothing
+			ResumeValues: nil, // sleep returns nothing
 			Response:   nil, // no response needed for internal events
 		}
 		select {
@@ -841,7 +841,7 @@ func golapis_sleep(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:       EventResumeThread,
 				Thread:     thread,
-				ReturnVals: nil, // sleep returns nothing
+				ResumeValues: nil, // sleep returns nothing
 				Response:   nil, // no response needed for internal events
 			}
 		}()

@@ -131,7 +131,7 @@ type StateEvent struct {
 
 	// For ResumeThread (async completion)
 	Thread     *LuaThread
-	ReturnVals []interface{}
+	ResumeValues []interface{}
 	OnResume   func(event *StateEvent) // Called on main thread before resuming Lua (for state mutation)
 
 	// For EventTimerFire
@@ -246,7 +246,7 @@ func (gls *GolapisLuaState) Wait() {
 func (gls *GolapisLuaState) RunFile(filename string, args []string) error {
 	resp := make(chan *StateResponse, 1)
 
-	// Convert args to []interface{} for ReturnVals
+	// Convert args to []interface{} for ResumeValues
 	var initArgs []interface{}
 	for _, arg := range args {
 		initArgs = append(initArgs, arg)
@@ -255,7 +255,7 @@ func (gls *GolapisLuaState) RunFile(filename string, args []string) error {
 	gls.eventChan <- &StateEvent{
 		Type:       EventRunFile,
 		Filename:   filename,
-		ReturnVals: initArgs,
+		ResumeValues: initArgs,
 		Response:   resp,
 	}
 	result := <-resp
@@ -281,7 +281,7 @@ func (gls *GolapisLuaState) RunEntryPoint(args ...interface{}) error {
 	resp := make(chan *StateResponse, 1)
 	gls.eventChan <- &StateEvent{
 		Type:       EventRunEntryPoint,
-		ReturnVals: args,
+		ResumeValues: args,
 		Response:   resp,
 	}
 	result := <-resp
@@ -351,7 +351,7 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 	thread.outputWriter = event.OutputWriter
 	thread.request = event.Request
 
-	if err := thread.resume(event.ReturnVals); err != nil {
+	if err := thread.resume(event.ResumeValues); err != nil {
 		thread.close()
 		return &StateResponse{Error: err}
 	}
@@ -387,7 +387,7 @@ func (gls *GolapisLuaState) handleRunEntryPoint(event *StateEvent) *StateRespons
 	thread.outputWriter = event.OutputWriter
 	thread.request = event.Request
 
-	if err := thread.resume(event.ReturnVals); err != nil {
+	if err := thread.resume(event.ResumeValues); err != nil {
 		thread.close()
 		return &StateResponse{Error: err}
 	}
@@ -445,7 +445,7 @@ func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse
 		event.OnResume(event)
 	}
 
-	if err := thread.resume(event.ReturnVals); err != nil {
+	if err := thread.resume(event.ResumeValues); err != nil {
 		// Send error to the original caller
 		if thread.responseChan != nil {
 			thread.responseChan <- &StateResponse{Error: err}

@@ -370,7 +370,7 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:       EventResumeThread,
 				Thread:     thread,
-				ReturnVals: []interface{}{nil, err.Error()},
+				ResumeValues: []interface{}{nil, err.Error()},
 			}
 			return
 		}
@@ -379,13 +379,13 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:       EventResumeThread,
 			Thread:     thread,
-			ReturnVals: []interface{}{1},
+			ResumeValues: []interface{}{1},
 			OnResume: func(event *StateEvent) {
 				if sock.closed || sock.gen != gen {
 					if conn != nil {
 						conn.Close()
 					}
-					event.ReturnVals = []interface{}{nil, "closed"}
+					event.ResumeValues = []interface{}{nil, "closed"}
 					return
 				}
 				sock.conn = conn
@@ -509,7 +509,7 @@ func golapis_udp_receive(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:       EventResumeThread,
 				Thread:     thread,
-				ReturnVals: []interface{}{nil, normalizeNetError(err)},
+				ResumeValues: []interface{}{nil, normalizeNetError(err)},
 			}
 			return
 		}
@@ -518,7 +518,7 @@ func golapis_udp_receive(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:       EventResumeThread,
 			Thread:     thread,
-			ReturnVals: []interface{}{string(buf[:n])},
+			ResumeValues: []interface{}{string(buf[:n])},
 		}
 	}()
 
