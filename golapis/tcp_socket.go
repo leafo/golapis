@@ -821,6 +821,156 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 	return C.lua_yield_wrapper(L, 0)
 }
 
+//export golapis_tcp_receiveany
+func golapis_tcp_receiveany(L *C.lua_State) C.int {
+	sock, sockID := getTCPSocketFromUserdata(L, 1)
+	if sock == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "invalid socket")
+		return 2
+	}
+	if !checkTCPSocketAffinity(L, sock, sockID) {
+		return 2
+	}
+
+	if sock.closed {
+		C.lua_pushnil(L)
+		pushGoString(L, "closed")
+		return 2
+	}
+
+	if !sock.connected {
+		C.lua_pushnil(L)
+		pushGoString(L, "not connected")
+		return 2
+	}
+
+	if !checkTCPSocketBusy(L, sock, true, true, false) {
+		return 2
+	}
+
+	// receiveany requires a max argument
+	if C.lua_gettop(L) < 2 || C.lua_isnumber(L, 2) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "expecting max size as first argument")
+		return 2
+	}
+
+	max := int(C.lua_tonumber(L, 2))
+	if max <= 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "bad max argument")
+		return 2
+	}
+
+	// Check if we have buffered data - return immediately if so
+	bufferedLen := len(sock.readBuf) - sock.readBufPos
+	if bufferedLen > 0 {
+		readLen := bufferedLen
+		if readLen > max {
+			readLen = max
+		}
+		data := sock.readBuf[sock.readBufPos : sock.readBufPos+readLen]
+		sock.readBufPos += readLen
+		// Compact buffer if fully consumed
+		if sock.readBufPos >= len(sock.readBuf) {
+			sock.readBuf = nil
+			sock.readBufPos = 0
+		}
+		if debugEnabled {
+			debugLog("tcp.receiveany: id=%d max=%d returned=%d (from buffer)", sockID, max, readLen)
+		}
+		C.lua_pushlstring(L, (*C.char)(unsafe.Pointer(&data[0])), C.size_t(len(data)))
+		return 1
+	}
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "receiveany: could not find thread context")
+		return 2
+	}
+
+	// Capture values for goroutine
+	timeout := sock.readTimeout
+	conn := sock.conn
+	gen := sock.gen
+
+	if debugEnabled {
+		debugLog("tcp.receiveany: id=%d max=%d timeout=%v", sockID, max, timeout)
+	}
+
+	sock.reading = true
+	go func() {
+		// Allocate buffer up to max size
+		buf := make([]byte, max)
+
+		if timeout > 0 {
+			conn.SetReadDeadline(time.Now().Add(timeout))
+		} else {
+			conn.SetReadDeadline(time.Time{})
+		}
+
+		n, err := conn.Read(buf)
+		if n > 0 {
+			// Got data - return it even if there was also an error
+			dataStr := string(buf[:n])
+			if debugEnabled {
+				debugLog("tcp.receiveany: id=%d max=%d received=%d", sockID, max, n)
+			}
+			thread.state.eventChan <- &StateEvent{
+				Type:         EventResumeThread,
+				Thread:       thread,
+				ResumeValues: []interface{}{dataStr},
+				OnResume: func(event *StateEvent) {
+					sock.reading = false
+					if sock.closed || sock.gen != gen {
+						event.ResumeValues = []interface{}{nil, "closed"}
+					}
+				},
+			}
+			return
+		}
+
+		// No data read - handle the error
+		errStr := normalizeNetError(err)
+		isTimeout := strings.Contains(errStr, "timeout")
+
+		if err == io.EOF {
+			errStr = "closed"
+		}
+
+		if debugEnabled {
+			debugLog("tcp.receiveany: id=%d max=%d error=%s isTimeout=%v", sockID, max, errStr, isTimeout)
+		}
+
+		// Per OpenResty docs: receiveany doesn't auto-close on timeout,
+		// but does auto-close on other connection errors
+		shouldClose := !isTimeout && err != io.EOF
+
+		thread.state.eventChan <- &StateEvent{
+			Type:         EventResumeThread,
+			Thread:       thread,
+			ResumeValues: []interface{}{nil, errStr},
+			OnResume: func(event *StateEvent) {
+				sock.reading = false
+				if shouldClose && !sock.closed {
+					if sock.conn != nil {
+						sock.conn.Close()
+					}
+					sock.conn = nil
+					sock.connected = false
+					sock.readBuf = nil
+					sock.readBufPos = 0
+					sock.gen++
+				}
+			},
+		}
+	}()
+
+	return C.lua_yield_wrapper(L, 0)
+}
+
 //export golapis_tcp_close
 func golapis_tcp_close(L *C.lua_State) C.int {
 	sock, sockID := getTCPSocketFromUserdata(L, 1)
