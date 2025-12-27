@@ -21,14 +21,6 @@ func (gls *GolapisLuaState) unregisterState() {
 	delete(luaStateMap, gls.luaState)
 }
 
-func (thread *LuaThread) registerThread() {
-	luaThreadMap[thread.co] = thread
-}
-
-func (thread *LuaThread) unregisterThread() {
-	delete(luaThreadMap, thread.co)
-}
-
 func getLuaStateFromRegistry(L *C.lua_State) *GolapisLuaState {
 	// First check if L is a main state
 	if gls, ok := luaStateMap[L]; ok {

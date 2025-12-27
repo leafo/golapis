@@ -133,4 +133,14 @@ static int lua_gc_wrapper(lua_State *L, int what, int data) {
     return lua_gc(L, what, data);
 }
 
+// Wrapper for lua_pushthread (returns 1 if main thread)
+static int lua_pushthread_wrapper(lua_State *L) {
+    return lua_pushthread(L);
+}
+
+// Wrapper for lua_tothread (macro in Lua)
+static lua_State* lua_tothread_wrapper(lua_State *L, int idx) {
+    return lua_tothread(L, idx);
+}
+
 #endif

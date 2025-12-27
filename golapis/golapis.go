@@ -492,41 +492,41 @@ func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 		ctxRef: ctxRef,
 	}
 
-	// Register thread in map so async ops within the callback can find it
+	thread.coCtxByState = make(map[*C.lua_State]*coCtx)
+	entry := &coCtx{
+		co:     co,
+		status: coSuspended,
+		thread: thread,
+	}
+	thread.entryCo = entry
+	thread.curCo = entry
+	thread.coCtxByState[co] = entry
 	luaThreadMap[co] = thread
 
 	if debugEnabled {
 		debugLog("handleTimerFire: co=%p premature=%v nargs=%d", co, event.Premature, nargs)
 	}
 
-	// Set context and resume
-	thread.setCtx()
-	thread.status = ThreadRunning
-	result := C.lua_resume(co, nargs)
-	thread.clearCtx()
+	if err := thread.resumeWithArgCount(int(nargs)); err != nil {
+		if debugEnabled {
+			debugLog("handleTimerFire: co=%p error: %s", co, err)
+		}
+		fmt.Printf("timer callback error: %s\n", err)
+		thread.close()
+		return
+	}
 
-	switch result {
-	case 0: // LUA_OK - completed
-		thread.status = ThreadDead
+	switch thread.status {
+	case ThreadDead, ThreadExited:
 		if debugEnabled {
 			debugLog("handleTimerFire: co=%p completed", co)
 		}
 		thread.close()
-	case 1: // LUA_YIELD - callback yielded (e.g., called sleep or http.request)
-		thread.status = ThreadYielded
+	case ThreadYielded:
 		if debugEnabled {
 			debugLog("handleTimerFire: co=%p yielded", co)
 		}
 		// Thread will be resumed later via EventResumeThread
-	default: // Error
-		thread.status = ThreadDead
-		errMsg := C.GoString(C.lua_tostring_wrapper(co, -1))
-		if debugEnabled {
-			debugLog("handleTimerFire: co=%p error: %s", co, errMsg)
-		}
-		// Log error but don't fail - timer callbacks are fire-and-forget
-		fmt.Printf("timer callback error: %s\n", errMsg)
-		thread.close()
 	}
 
 	// Coroutine registry reference is released in thread.close() after completion.

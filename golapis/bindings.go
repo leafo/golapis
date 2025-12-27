@@ -36,6 +36,11 @@ extern int golapis_encode_base64(lua_State *L);
 extern int golapis_decode_base64(lua_State *L);
 extern int golapis_decode_base64mime(lua_State *L);
 extern int golapis_exit(lua_State *L);
+extern int golapis_coroutine_create(lua_State *L);
+extern int golapis_coroutine_resume(lua_State *L);
+extern int golapis_coroutine_yield(lua_State *L);
+extern int golapis_coroutine_status(lua_State *L);
+extern int golapis_coroutine_running(lua_State *L);
 
 // UDP socket functions
 extern int golapis_socket_udp_new(lua_State *L);
@@ -218,6 +223,106 @@ static int c_exit_wrapper(lua_State *L) {
     }
     // Success - yield from C (not Go, since yield uses longjmp)
     return lua_yield(L, 0);
+}
+
+static int c_coroutine_create_wrapper(lua_State *L) {
+    int result = golapis_coroutine_create(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_coroutine_resume_wrapper(lua_State *L) {
+    int result = golapis_coroutine_resume(L);
+    if (result == -2) {
+        return lua_yield(L, lua_gettop(L) - 1);
+    }
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_coroutine_yield_wrapper(lua_State *L) {
+    int result = golapis_coroutine_yield(L);
+    if (result == -2) {
+        return lua_yield(L, lua_gettop(L));
+    }
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_coroutine_status_wrapper(lua_State *L) {
+    int result = golapis_coroutine_status(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_coroutine_running_wrapper(lua_State *L) {
+    return golapis_coroutine_running(L);
+}
+
+static void setup_coroutine_module(lua_State *L) {
+    // New coroutine table
+    lua_createtable(L, 0, 12);
+
+    // Get old coroutine table
+    lua_getglobal(L, "coroutine");
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        return;
+    }
+
+    // Preserve standard functions under underscore keys
+    lua_getfield(L, -1, "create");
+    lua_setfield(L, -3, "_create");
+    lua_getfield(L, -1, "resume");
+    lua_setfield(L, -3, "_resume");
+    lua_getfield(L, -1, "yield");
+    lua_setfield(L, -3, "_yield");
+    lua_getfield(L, -1, "status");
+    lua_setfield(L, -3, "_status");
+    lua_getfield(L, -1, "running");
+    lua_setfield(L, -3, "_running");
+    lua_getfield(L, -1, "wrap");
+    lua_setfield(L, -3, "_wrap");
+
+    // Pop old coroutine table
+    lua_pop(L, 1);
+
+    // Install Golapis coroutine functions
+    lua_pushcfunction(L, c_coroutine_create_wrapper);
+    lua_setfield(L, -2, "create");
+    lua_pushcfunction(L, c_coroutine_create_wrapper);
+    lua_setfield(L, -2, "__create");
+
+    lua_pushcfunction(L, c_coroutine_resume_wrapper);
+    lua_setfield(L, -2, "resume");
+    lua_pushcfunction(L, c_coroutine_resume_wrapper);
+    lua_setfield(L, -2, "__resume");
+
+    lua_pushcfunction(L, c_coroutine_yield_wrapper);
+    lua_setfield(L, -2, "yield");
+    lua_pushcfunction(L, c_coroutine_yield_wrapper);
+    lua_setfield(L, -2, "__yield");
+
+    lua_pushcfunction(L, c_coroutine_status_wrapper);
+    lua_setfield(L, -2, "status");
+    lua_pushcfunction(L, c_coroutine_status_wrapper);
+    lua_setfield(L, -2, "__status");
+
+    lua_pushcfunction(L, c_coroutine_running_wrapper);
+    lua_setfield(L, -2, "running");
+    lua_pushcfunction(L, c_coroutine_running_wrapper);
+    lua_setfield(L, -2, "__running");
+
+    // Set global "coroutine" to new table
+    lua_setglobal(L, "coroutine");
 }
 
 // No-op - Go's time.Now() is already fast (VDSO). Exists for API compatibility.
@@ -710,6 +815,10 @@ func golapis_sleep(L *C.lua_State) C.int {
 		return 2
 	}
 
+	if debugEnabled {
+		debugLog("sleep: co=%p seconds=%f", L, seconds)
+	}
+
 	if seconds == 0 {
 		// Yield back to the event loop without spawning a timer goroutine.
 		event := &StateEvent{
@@ -784,6 +893,163 @@ func golapis_exit(L *C.lua_State) C.int {
 	thread.exitCode = status
 
 	return 0 // Success - C wrapper will yield
+}
+
+//export golapis_coroutine_create
+func golapis_coroutine_create(L *C.lua_State) C.int {
+	if C.lua_gettop(L) < 1 || C.lua_isfunction_wrapper(L, 1) == 0 {
+		pushGoString(L, "coroutine.create expects a function")
+		return -1
+	}
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "coroutine.create: no thread context")
+		return 2
+	}
+
+	gls := thread.state
+	co := C.lua_newthread(gls.luaState)
+	if co == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "coroutine.create: failed to create coroutine")
+		return 2
+	}
+
+	coRef := C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
+
+	// Move entry function onto coroutine stack
+	C.lua_pushvalue(L, 1)
+	C.lua_xmove(L, co, 1)
+
+	thread.registerCoroutine(co, coRef)
+	if debugEnabled {
+		debugLog("coroutine.create: co=%p parent=%p", co, thread.curCo.co)
+	}
+
+	// Return coroutine object to caller
+	C.lua_rawgeti_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, coRef)
+	C.lua_xmove(gls.luaState, L, 1)
+	return 1
+}
+
+//export golapis_coroutine_resume
+func golapis_coroutine_resume(L *C.lua_State) C.int {
+	co := C.lua_tothread_wrapper(L, 1)
+	if co == nil {
+		C.lua_pushboolean(L, 0)
+		pushGoString(L, "coroutine expected")
+		return 2
+	}
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushboolean(L, 0)
+		pushGoString(L, "coroutine.resume: no thread context")
+		return 2
+	}
+
+	coctx := thread.getCoCtx(co)
+	if coctx == nil || coctx.status == coDead {
+		C.lua_pushboolean(L, 0)
+		pushGoString(L, "cannot resume dead coroutine")
+		return 2
+	}
+	if coctx.status != coSuspended {
+		C.lua_pushboolean(L, 0)
+		pushGoString(L, "cannot resume running coroutine")
+		return 2
+	}
+
+	parent := thread.curCo
+	if parent == nil {
+		C.lua_pushboolean(L, 0)
+		pushGoString(L, "coroutine.resume: no parent coroutine")
+		return 2
+	}
+
+	if debugEnabled {
+		debugLog("coroutine.resume: parent=%p target=%p nargs=%d", parent.co, coctx.co, C.lua_gettop(L)-1)
+	}
+
+	coctx.parent = parent
+	parent.status = coNormal
+	thread.curCo = coctx
+	thread.coOp = coOpUserResume
+
+	// Yield with resume args (excluding the coroutine) in C wrapper
+	return -2
+}
+
+//export golapis_coroutine_yield
+func golapis_coroutine_yield(L *C.lua_State) C.int {
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		pushGoString(L, "attempt to yield from outside a coroutine")
+		return -1
+	}
+
+	if thread.entryCo != nil && thread.entryCo.co == L {
+		pushGoString(L, "attempt to yield from outside a coroutine")
+		return -1
+	}
+
+	if debugEnabled {
+		debugLog("coroutine.yield: co=%p nrets=%d", L, C.lua_gettop(L))
+	}
+
+	thread.coOp = coOpUserYield
+	return -2
+}
+
+//export golapis_coroutine_status
+func golapis_coroutine_status(L *C.lua_State) C.int {
+	co := C.lua_tothread_wrapper(L, 1)
+	if co == nil {
+		pushGoString(L, "coroutine expected")
+		return -1
+	}
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		pushGoString(L, "dead")
+		return 1
+	}
+
+	coctx := thread.getCoCtx(co)
+	if coctx == nil {
+		pushGoString(L, "dead")
+		return 1
+	}
+
+	status := coctx.status
+	if thread.curCo != nil && thread.curCo.co == co && status != coDead {
+		status = coRunning
+	}
+
+	switch status {
+	case coRunning:
+		pushGoString(L, "running")
+	case coSuspended:
+		pushGoString(L, "suspended")
+	case coNormal:
+		pushGoString(L, "normal")
+	default:
+		pushGoString(L, "dead")
+	}
+	return 1
+}
+
+//export golapis_coroutine_running
+func golapis_coroutine_running(L *C.lua_State) C.int {
+	thread := getLuaThreadFromRegistry(L)
+	isMain := C.lua_pushthread_wrapper(L)
+	if thread != nil && thread.entryCo != nil && thread.entryCo.co == L {
+		isMain = 1
+	}
+	C.lua_pushboolean(L, isMain)
+	return 2
 }
 
 //export golapis_now
@@ -1774,9 +2040,14 @@ func (gls *GolapisLuaState) writeOutput(text string) {
 // SetupGolapis initializes the golapis global table with exported functions
 func (gls *GolapisLuaState) SetupGolapis() {
 	gls.golapisRef = C.setup_golapis_global(gls.luaState)
+	gls.injectCoroutineModule()
 	if err := gls.runBootstrap(); err != nil {
 		panic(fmt.Sprintf("failed to run bootstrap: %v", err))
 	}
+}
+
+func (gls *GolapisLuaState) injectCoroutineModule() {
+	C.setup_coroutine_module(gls.luaState)
 }
 
 // SetupArgTable creates the global arg table

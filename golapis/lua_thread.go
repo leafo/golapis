@@ -29,6 +29,31 @@ const (
 	ThreadExited // terminated via golapis.exit()
 )
 
+type coStatus int
+
+const (
+	coRunning coStatus = iota
+	coSuspended
+	coNormal
+	coDead
+)
+
+type coOp int
+
+const (
+	coOpNop coOp = iota
+	coOpUserResume
+	coOpUserYield
+)
+
+type coCtx struct {
+	co     *C.lua_State
+	parent *coCtx
+	status coStatus
+	coRef  C.int
+	thread *LuaThread
+}
+
 // LuaThread represents the execution of Lua code in a coroutine
 type LuaThread struct {
 	state        *GolapisLuaState
@@ -39,6 +64,11 @@ type LuaThread struct {
 	responseChan chan *StateResponse // channel to send final response when thread completes
 	outputWriter io.Writer           // per-request output destination (e.g., http.ResponseWriter)
 	request      *GolapisRequest     // Request context (nil in CLI mode)
+
+	curCo        *coCtx
+	entryCo      *coCtx
+	coOp         coOp
+	coCtxByState map[*C.lua_State]*coCtx
 
 	// Exit state (set by golapis.exit())
 	exited   bool // true if golapis.exit() was called
@@ -75,7 +105,16 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 		ctxRef: ctxRef,
 	}
 
-	thread.registerThread()
+	thread.coCtxByState = make(map[*C.lua_State]*coCtx)
+	entry := &coCtx{
+		co:     co,
+		status: coSuspended,
+		thread: thread,
+	}
+	thread.entryCo = entry
+	thread.curCo = entry
+	thread.coCtxByState[co] = entry
+	luaThreadMap[co] = thread
 	gls.threadWg.Add(1)
 	if debugEnabled {
 		debugLog("newThread: created thread co=%p", co)
@@ -112,113 +151,252 @@ func (t *LuaThread) checkExitYield() bool {
 	return t.exited
 }
 
+func (t *LuaThread) registerCoroutine(co *C.lua_State, coRef C.int) *coCtx {
+	if t.coCtxByState == nil {
+		t.coCtxByState = make(map[*C.lua_State]*coCtx)
+	}
+	coctx := t.coCtxByState[co]
+	if coctx == nil {
+		coctx = &coCtx{
+			co:     co,
+			status: coSuspended,
+			thread: t,
+		}
+	}
+	if coRef != 0 {
+		coctx.coRef = coRef
+	}
+	t.coCtxByState[co] = coctx
+	luaThreadMap[co] = t
+	return coctx
+}
+
+func (t *LuaThread) unregisterCoroutine(co *C.lua_State) {
+	delete(t.coCtxByState, co)
+	delete(luaThreadMap, co)
+}
+
+func (t *LuaThread) getCoCtx(co *C.lua_State) *coCtx {
+	if t.coCtxByState == nil {
+		return nil
+	}
+	return t.coCtxByState[co]
+}
+
+func (t *LuaThread) cleanupCoroutine(coctx *coCtx) {
+	if coctx == nil {
+		return
+	}
+	if debugEnabled {
+		debugLog("coroutine.cleanup: co=%p", coctx.co)
+	}
+	if coctx.coRef != 0 {
+		C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, coctx.coRef)
+		coctx.coRef = 0
+	}
+	t.unregisterCoroutine(coctx.co)
+}
+
 // resume starts or continues execution of the thread (internal)
 // Pass nil or empty slice when no values are needed
 func (t *LuaThread) resume(values []interface{}) error {
+	return t.resumeInternal(values, -1)
+}
+
+func (t *LuaThread) resumeWithArgCount(argCount int) error {
+	return t.resumeInternal(nil, argCount)
+}
+
+func (t *LuaThread) resumeInternal(values []interface{}, initialArgCount int) error {
 	if t.status == ThreadDead || t.status == ThreadExited {
 		return fmt.Errorf("cannot resume dead or exited thread")
 	}
-	if t.co == nil {
+	if t.curCo == nil || t.curCo.co == nil {
 		return fmt.Errorf("cannot resume closed thread")
 	}
 
-	if debugEnabled {
-		debugLog("thread.resume: co=%p resuming with %d values", t.co, len(values))
-	}
+	pendingArgCount := initialArgCount
+	for {
+		coctx := t.curCo
+		if coctx == nil || coctx.co == nil {
+			return fmt.Errorf("cannot resume closed thread")
+		}
 
-	// Push return values onto coroutine stack
-	nret := C.int(0)
-	for _, v := range values {
-		switch val := v.(type) {
-		case string:
-			if len(val) == 0 {
-				C.lua_pushlstring(t.co, nil, 0)
-			} else {
-				C.lua_pushlstring(t.co, (*C.char)(unsafe.Pointer(unsafe.StringData(val))), C.size_t(len(val)))
-			}
-		case int:
-			C.lua_pushinteger(t.co, C.lua_Integer(val))
-		case int64:
-			C.lua_pushinteger(t.co, C.lua_Integer(val))
-		case float64:
-			C.lua_pushnumber(t.co, C.lua_Number(val))
-		case bool:
-			if val {
-				C.lua_pushboolean(t.co, 1)
-			} else {
-				C.lua_pushboolean(t.co, 0)
-			}
-		case nil:
-			C.lua_pushnil(t.co)
-		case map[string][]string:
-			// Push as nested Lua table (for HTTP headers)
-			C.lua_newtable_wrapper(t.co)
-			for key, headerValues := range val {
-				if len(key) == 0 {
-					C.lua_pushlstring(t.co, nil, 0)
-				} else {
-					C.lua_pushlstring(t.co, (*C.char)(unsafe.Pointer(unsafe.StringData(key))), C.size_t(len(key)))
-				}
+		if debugEnabled {
+			debugLog("thread.resume: co=%p resuming with %d values", coctx.co, len(values))
+		}
 
-				// Create array of values for this header
-				C.lua_newtable_wrapper(t.co)
-				for i, hv := range headerValues {
-					C.lua_pushinteger(t.co, C.lua_Integer(i+1))
-					if len(hv) == 0 {
-						C.lua_pushlstring(t.co, nil, 0)
+		// Push return values onto coroutine stack
+		nret := C.int(0)
+		if pendingArgCount >= 0 {
+			nret = C.int(pendingArgCount)
+			pendingArgCount = -1
+		} else {
+			for _, v := range values {
+				switch val := v.(type) {
+				case string:
+					if len(val) == 0 {
+						C.lua_pushlstring(coctx.co, nil, 0)
 					} else {
-						C.lua_pushlstring(t.co, (*C.char)(unsafe.Pointer(unsafe.StringData(hv))), C.size_t(len(hv)))
+						C.lua_pushlstring(coctx.co, (*C.char)(unsafe.Pointer(unsafe.StringData(val))), C.size_t(len(val)))
 					}
-					C.lua_settable(t.co, -3)
+				case int:
+					C.lua_pushinteger(coctx.co, C.lua_Integer(val))
+				case int64:
+					C.lua_pushinteger(coctx.co, C.lua_Integer(val))
+				case float64:
+					C.lua_pushnumber(coctx.co, C.lua_Number(val))
+				case bool:
+					if val {
+						C.lua_pushboolean(coctx.co, 1)
+					} else {
+						C.lua_pushboolean(coctx.co, 0)
+					}
+				case nil:
+					C.lua_pushnil(coctx.co)
+				case map[string][]string:
+					// Push as nested Lua table (for HTTP headers)
+					C.lua_newtable_wrapper(coctx.co)
+					for key, headerValues := range val {
+						if len(key) == 0 {
+							C.lua_pushlstring(coctx.co, nil, 0)
+						} else {
+							C.lua_pushlstring(coctx.co, (*C.char)(unsafe.Pointer(unsafe.StringData(key))), C.size_t(len(key)))
+						}
+
+						// Create array of values for this header
+						C.lua_newtable_wrapper(coctx.co)
+						for i, hv := range headerValues {
+							C.lua_pushinteger(coctx.co, C.lua_Integer(i+1))
+							if len(hv) == 0 {
+								C.lua_pushlstring(coctx.co, nil, 0)
+							} else {
+								C.lua_pushlstring(coctx.co, (*C.char)(unsafe.Pointer(unsafe.StringData(hv))), C.size_t(len(hv)))
+							}
+							C.lua_settable(coctx.co, -3)
+						}
+						C.lua_settable(coctx.co, -3)
+					}
+				default:
+					C.lua_pushnil(coctx.co) // unsupported type, push nil
 				}
-				C.lua_settable(t.co, -3)
+				nret++
+			}
+			values = nil
+		}
+
+		t.setCtx() // Set golapis.ctx before resuming
+		t.status = ThreadRunning
+		coctx.status = coRunning
+		result := C.lua_resume(coctx.co, nret)
+		t.clearCtx() // Clear golapis.ctx after yield/finish
+
+		switch result {
+		case 0: // LUA_OK
+			coctx.status = coDead
+			if coctx.parent == nil {
+				t.status = ThreadDead
+				return nil
+			}
+
+			parent := coctx.parent
+			nrets := C.lua_gettop(coctx.co)
+			if nrets > 0 {
+				C.lua_xmove(coctx.co, parent.co, nrets)
+			}
+			if debugEnabled {
+				debugLog("coroutine.done: co=%p nrets=%d", coctx.co, nrets)
+			}
+			C.lua_pushboolean(parent.co, 1)
+			C.lua_insert_wrapper(parent.co, 1)
+
+			parent.status = coRunning
+			t.cleanupCoroutine(coctx)
+			t.curCo = parent
+			pendingArgCount = int(C.lua_gettop(parent.co))
+			continue
+		case 1: // LUA_YIELD
+			if t.checkExitYield() {
+				t.status = ThreadExited
+				return nil
+			}
+
+			switch t.coOp {
+			case coOpUserResume:
+				t.coOp = coOpNop
+				parent := coctx
+				child := t.curCo
+				if child == nil || child.parent != parent {
+					return fmt.Errorf("coroutine.resume: no parent coroutine")
+				}
+				if debugEnabled {
+					debugLog("scheduler: resume co=%p from parent=%p", child.co, parent.co)
+				}
+				nargs := C.lua_gettop(parent.co)
+				if nargs > 0 {
+					C.lua_xmove(parent.co, child.co, nargs)
+				}
+				parent.status = coNormal
+				child.status = coRunning
+				t.curCo = child
+				pendingArgCount = int(nargs)
+				continue
+			case coOpUserYield:
+				t.coOp = coOpNop
+				parent := coctx.parent
+				if parent == nil {
+					return fmt.Errorf("coroutine.yield: no parent coroutine")
+				}
+				if debugEnabled {
+					debugLog("scheduler: yield co=%p to parent=%p nrets=%d", coctx.co, parent.co, C.lua_gettop(coctx.co))
+				}
+				nrets := C.lua_gettop(coctx.co)
+				if nrets > 0 {
+					C.lua_xmove(coctx.co, parent.co, nrets)
+				}
+				C.lua_pushboolean(parent.co, 1)
+				C.lua_insert_wrapper(parent.co, 1)
+
+				coctx.status = coSuspended
+				parent.status = coRunning
+				t.curCo = parent
+				pendingArgCount = int(C.lua_gettop(parent.co))
+				continue
+			default:
+				t.coOp = coOpNop
+				coctx.status = coSuspended
+				t.status = ThreadYielded
+				if debugEnabled {
+					debugLog("scheduler: async yield co=%p", coctx.co)
+				}
+				return nil
 			}
 		default:
-			C.lua_pushnil(t.co) // unsupported type, push nil
-		}
-		nret++
-	}
-
-	t.setCtx() // Set golapis.ctx before resuming
-	t.status = ThreadRunning
-	result := C.lua_resume(t.co, nret)
-	t.clearCtx() // Clear golapis.ctx after yield/finish
-
-	switch result {
-	case 0: // LUA_OK
-		t.status = ThreadDead
-		if debugEnabled {
-			debugLog("thread.resume: co=%p completed", t.co)
-		}
-		return nil
-	case 1: // LUA_YIELD
-		// Check if this is an exit yield (golapis.exit() was called)
-		if t.checkExitYield() {
-			t.status = ThreadExited
-			if debugEnabled {
-				debugLog("thread.resume: co=%p exited with code %d", t.co, t.exitCode)
+			traceback := t.getTraceback(coctx.co)
+			coctx.status = coDead
+			parent := coctx.parent
+			if parent == nil {
+				t.status = ThreadDead
+				return errors.New(traceback)
 			}
-		} else {
-			t.status = ThreadYielded
-			if debugEnabled {
-				debugLog("thread.resume: co=%p yielded", t.co)
-			}
+
+			pushGoString(parent.co, traceback)
+			C.lua_pushboolean(parent.co, 0)
+			C.lua_insert_wrapper(parent.co, 1)
+
+			parent.status = coRunning
+			t.cleanupCoroutine(coctx)
+			t.curCo = parent
+			pendingArgCount = int(C.lua_gettop(parent.co))
+			continue
 		}
-		return nil
-	default:
-		t.status = ThreadDead
-		traceback := t.getTraceback()
-		if debugEnabled {
-			debugLog("thread.resume: co=%p error: %s", t.co, traceback)
-		}
-		return errors.New(traceback)
 	}
 }
 
 // getTraceback calls debug.traceback(co, msg, 0) to get a full stack trace
-func (t *LuaThread) getTraceback() string {
+func (t *LuaThread) getTraceback(co *C.lua_State) string {
 	L := t.state.luaState
-	C.lua_push_traceback(L, t.co)
+	C.lua_push_traceback(L, co)
 	traceback := C.GoString(C.lua_tostring_wrapper(L, -1))
 	C.lua_pop_wrapper(L, 1)
 	return traceback
@@ -231,7 +409,14 @@ func (t *LuaThread) close() {
 		if debugEnabled {
 			debugLog("thread.close: co=%p", t.co)
 		}
-		t.unregisterThread()
+		for _, coctx := range t.coCtxByState {
+			if coctx.coRef != 0 {
+				C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, coctx.coRef)
+				coctx.coRef = 0
+			}
+			t.unregisterCoroutine(coctx.co)
+		}
+		t.coCtxByState = nil
 
 		if t.coRef != 0 {
 			C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, t.coRef)
