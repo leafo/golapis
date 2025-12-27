@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -13,10 +14,17 @@ import (
 // DefaultClientMaxBodySize is the default maximum request body size (1MB)
 const DefaultClientMaxBodySize int64 = 1 * 1024 * 1024
 
+// FileServerMapping maps a local directory to a URL prefix for static file serving
+type FileServerMapping struct {
+	LocalPath string // local filesystem path (e.g., "./static")
+	URLPrefix string // URL prefix (e.g., "/static/")
+}
+
 // HTTPServerConfig holds configuration for the HTTP server
 type HTTPServerConfig struct {
-	ClientMaxBodySize int64 // max request body size in bytes (0 = unlimited)
-	NgxAlias          bool  // alias golapis table to global ngx
+	ClientMaxBodySize int64               // max request body size in bytes (0 = unlimited)
+	NgxAlias          bool                // alias golapis table to global ngx
+	FileServers       []FileServerMapping // static file server mappings
 }
 
 // DefaultHTTPServerConfig returns the default HTTP server configuration.
@@ -83,6 +91,26 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 
 	// Setup graceful shutdown
 	setupGracefulShutdown(lua)
+
+	// Register static file servers first (more specific routes take precedence)
+	for _, fs := range config.FileServers {
+		prefix := fs.URLPrefix
+		if !strings.HasPrefix(prefix, "/") {
+			prefix = "/" + prefix
+		}
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+		localPath := fs.LocalPath // capture for closure
+		fileHandler := http.StripPrefix(prefix, http.FileServer(http.Dir(localPath)))
+		// Wrap with logging
+		http.Handle(prefix, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			startTime := time.Now()
+			fileHandler.ServeHTTP(w, r)
+			logHTTPRequest(r, startTime, http.StatusOK, 0)
+		}))
+		fmt.Printf("Serving files from %s at %s\n", localPath, prefix)
+	}
 
 	// Create handler with logging wrapper
 	handler := lua.HTTPHandler(config)

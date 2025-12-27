@@ -5,9 +5,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"golapis/golapis"
 )
+
+// fileServerFlags implements flag.Value to collect multiple --file-server flags
+type fileServerFlags []string
+
+func (f *fileServerFlags) String() string { return strings.Join(*f, ", ") }
+func (f *fileServerFlags) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
 
 var (
 	version   = "dev"
@@ -23,6 +34,8 @@ func main() {
 	eFlag := flag.String("e", "", "execute string 'stat'")
 	lFlag := flag.String("l", "", "require library 'name'")
 	ngxFlag := flag.Bool("ngx", false, "alias golapis table to global ngx")
+	var fileServers fileServerFlags
+	flag.Var(&fileServers, "file-server", "Serve static files: LOCAL_PATH:URL_PREFIX (can be repeated)")
 	flag.Parse()
 
 	if *versionFlag || *vFlag {
@@ -47,6 +60,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  --http   start HTTP server mode")
 		fmt.Fprintln(os.Stderr, "  --port   port for HTTP server (default 8080)")
 		fmt.Fprintln(os.Stderr, "  --ngx    alias golapis table to global ngx")
+		fmt.Fprintln(os.Stderr, "  --file-server PATH[:URL] serve static files (can be repeated)")
 		os.Exit(1)
 	}
 
@@ -67,7 +81,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "HTTP mode requires a script file or -e code")
 			os.Exit(1)
 		}
-		startHTTPServer(entry, *portFlag, *ngxFlag)
+		startHTTPServer(entry, *portFlag, *ngxFlag, fileServers)
 	} else {
 		runSingleExecution(filename, scriptArgs, *lFlag, *eFlag, *ngxFlag)
 	}
@@ -138,8 +152,30 @@ func runSingleExecution(filename string, scriptArgs []string, requireLib string,
 	lua.Wait()
 }
 
-func startHTTPServer(entry golapis.EntryPoint, port string, ngxAlias bool) {
+func startHTTPServer(entry golapis.EntryPoint, port string, ngxAlias bool, fileServers []string) {
 	config := golapis.DefaultHTTPServerConfig()
 	config.NgxAlias = ngxAlias
+
+	// Parse file server mappings
+	for _, fs := range fileServers {
+		var localPath, urlPrefix string
+		if parts := strings.SplitN(fs, ":", 2); len(parts) == 2 {
+			localPath, urlPrefix = parts[0], parts[1]
+		} else {
+			// Shorthand: derive URL prefix from directory name
+			localPath = fs
+			urlPrefix = filepath.Base(fs)
+			// Reject if base doesn't produce a valid URL prefix
+			if urlPrefix == "." || urlPrefix == ".." || urlPrefix == "/" || urlPrefix == "" {
+				fmt.Fprintf(os.Stderr, "cannot derive URL prefix from %q, use explicit format PATH:URL_PREFIX\n", fs)
+				os.Exit(1)
+			}
+		}
+		config.FileServers = append(config.FileServers, golapis.FileServerMapping{
+			LocalPath: localPath,
+			URLPrefix: urlPrefix,
+		})
+	}
+
 	golapis.StartHTTPServer(entry, port, config)
 }
