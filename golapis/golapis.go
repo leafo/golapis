@@ -349,7 +349,7 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 	// Store the response channel, output writer, and request context on the thread
 	thread.responseChan = event.Response
 	thread.outputWriter = event.OutputWriter
-	thread.request = event.Request
+	thread.setRequest(event.Request)
 
 	if err := thread.resume(event.ResumeValues); err != nil {
 		thread.close()
@@ -385,7 +385,7 @@ func (gls *GolapisLuaState) handleRunEntryPoint(event *StateEvent) *StateRespons
 	// Store the response channel, output writer, and request context on the thread
 	thread.responseChan = event.Response
 	thread.outputWriter = event.OutputWriter
-	thread.request = event.Request
+	thread.setRequest(event.Request)
 
 	if err := thread.resume(event.ResumeValues); err != nil {
 		thread.close()
@@ -417,7 +417,7 @@ func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
 	// Store the response channel, output writer, and request context on the thread
 	thread.responseChan = event.Response
 	thread.outputWriter = event.OutputWriter
-	thread.request = event.Request
+	thread.setRequest(event.Request)
 
 	if err := thread.resume(nil); err != nil {
 		thread.close()

@@ -53,7 +53,7 @@ type UDPSocket struct {
 	closed      bool          // true after close() called
 	isUnix      bool          // true for unix:/ domain sockets
 	gen         uint64        // increments to invalidate in-flight async operations
-	ownerThread *C.lua_State  // coroutine that created this socket (for request affinity)
+	ownerThread *LuaThread    // thread context that created this socket (for request affinity)
 }
 
 // UDP socket registry - maps socket ID to Go object
@@ -96,11 +96,12 @@ func getUDPSocketFromUserdata(L *C.lua_State, idx C.int) (*UDPSocket, uint64) {
 	return getUDPSocketByID(id), id
 }
 
-// checkSocketAffinity verifies the socket belongs to the current thread.
+// checkSocketAffinity verifies the socket belongs to the current thread context.
 // Returns true if affinity check passes.
 // Returns false and pushes (nil, "bad request") to Lua stack if it fails.
 func checkSocketAffinity(L *C.lua_State, sock *UDPSocket) bool {
-	if sock.ownerThread != L {
+	currentThread := getLuaThreadFromRegistry(L)
+	if sock.ownerThread != currentThread {
 		C.lua_pushnil(L)
 		pushGoString(L, "bad request")
 		return false
@@ -178,9 +179,10 @@ func appendLuaValue(L *C.lua_State, idx C.int, buf *[]byte, strict bool) (bool, 
 
 //export golapis_socket_udp_new
 func golapis_socket_udp_new(L *C.lua_State) C.int {
+	thread := getLuaThreadFromRegistry(L)
 	sock := &UDPSocket{
 		timeout:     0,
-		ownerThread: L,
+		ownerThread: thread,
 	}
 	id := registerUDPSocket(sock)
 

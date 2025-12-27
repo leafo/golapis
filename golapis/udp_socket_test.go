@@ -792,3 +792,73 @@ func TestUDPSocketRequestAffinity(t *testing.T) {
 		t.Errorf("expected close to fail with 'bad request', got: %q", output)
 	}
 }
+
+func TestUDPSocketChildCoroutineCanUseSocket(t *testing.T) {
+	// Test that child coroutines created via coroutine.create can use sockets
+	// created in the parent coroutine (same request context)
+	serverAddr, cleanup := startUDPEchoServer(t)
+	defer cleanup()
+
+	code := `
+		-- Create socket in main coroutine
+		local sock = golapis.socket.udp()
+		sock:settimeout(1000)
+
+		local ok, err = sock:setpeername("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("setpeername failed: ", err)
+			return
+		end
+		golapis.say("connected")
+
+		-- Create a child coroutine that uses the same socket
+		local co = coroutine.create(function()
+			-- Send from child coroutine
+			local ok, err = sock:send("hello from child")
+			if not ok then
+				golapis.say("child send failed: ", err)
+				return
+			end
+			golapis.say("child sent ok")
+
+			-- Receive from child coroutine
+			local data, err = sock:receive()
+			if not data then
+				golapis.say("child receive failed: ", err)
+				return
+			end
+			golapis.say("child received: ", data)
+		end)
+
+		-- Resume the child coroutine
+		local ok, err = coroutine.resume(co)
+		if not ok then
+			golapis.say("coroutine error: ", err)
+		end
+
+		sock:close()
+		golapis.say("done")
+	`
+
+	output, err := runUDPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	// Socket operations from child coroutine should succeed
+	if strings.Contains(output, "bad request") {
+		t.Errorf("child coroutine should be able to use socket, got 'bad request': %q", output)
+	}
+	if !strings.Contains(output, "connected") {
+		t.Errorf("expected 'connected', got: %q", output)
+	}
+	if !strings.Contains(output, "child sent ok") {
+		t.Errorf("expected 'child sent ok', got: %q", output)
+	}
+	if !strings.Contains(output, "child received: hello from child") {
+		t.Errorf("expected 'child received: hello from child', got: %q", output)
+	}
+	if !strings.Contains(output, "done") {
+		t.Errorf("expected 'done', got: %q", output)
+	}
+}

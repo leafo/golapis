@@ -402,6 +402,15 @@ func (t *LuaThread) getTraceback(co *C.lua_State) string {
 	return traceback
 }
 
+// setRequest assigns the request context to the thread and logs debug info
+func (t *LuaThread) setRequest(request *GolapisRequest) {
+	t.request = request
+	if debugEnabled && request != nil && request.Request != nil {
+		r := request.Request
+		debugLog("thread.setRequest: co=%p %s %s", t.co, r.Method, r.URL.Path)
+	}
+}
+
 // close cleans up the thread resources (internal)
 // Must be called on the lua state goroutine
 func (t *LuaThread) close() {

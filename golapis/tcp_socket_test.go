@@ -802,6 +802,92 @@ func TestTCPSocketRequestAffinity(t *testing.T) {
 	}
 }
 
+func TestTCPSocketChildCoroutineCanUseSocket(t *testing.T) {
+	// Test that child coroutines created via coroutine.create can use sockets
+	// created in the parent coroutine (same request context)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	// Echo server
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		io.Copy(conn, conn)
+	}()
+
+	code := `
+		local port = ` + itoa(port) + `
+
+		-- Create socket in main coroutine
+		local sock = golapis.socket.tcp()
+		sock:settimeout(1000)
+
+		local ok, err = sock:connect("127.0.0.1", port)
+		if not ok then
+			golapis.say("connect failed: ", err)
+			return
+		end
+		golapis.say("connected")
+
+		-- Create a child coroutine that uses the same socket
+		local co = coroutine.create(function()
+			-- Send from child coroutine
+			local bytes, err = sock:send("hello from child\n")
+			if not bytes then
+				golapis.say("child send failed: ", err)
+				return
+			end
+			golapis.say("child sent: ", bytes, " bytes")
+
+			-- Receive from child coroutine
+			local line, err = sock:receive("*l")
+			if not line then
+				golapis.say("child receive failed: ", err)
+				return
+			end
+			golapis.say("child received: ", line)
+		end)
+
+		-- Resume the child coroutine
+		local ok, err = coroutine.resume(co)
+		if not ok then
+			golapis.say("coroutine error: ", err)
+		end
+
+		sock:close()
+		golapis.say("done")
+	`
+
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+
+	// Socket operations from child coroutine should succeed
+	if strings.Contains(output, "bad request") {
+		t.Errorf("child coroutine should be able to use socket, got 'bad request': %q", output)
+	}
+	if !strings.Contains(output, "connected") {
+		t.Errorf("expected 'connected', got: %q", output)
+	}
+	if !strings.Contains(output, "child sent: 17 bytes") {
+		t.Errorf("expected 'child sent: 17 bytes', got: %q", output)
+	}
+	if !strings.Contains(output, "child received: hello from child") {
+		t.Errorf("expected 'child received: hello from child', got: %q", output)
+	}
+	if !strings.Contains(output, "done") {
+		t.Errorf("expected 'done', got: %q", output)
+	}
+}
+
 func TestGetPhase(t *testing.T) {
 	code := `
 		local phase = golapis.get_phase()

@@ -30,7 +30,7 @@ type TCPSocket struct {
 	closed         bool          // true after close() called
 	isUnix         bool          // true for unix:/ domain sockets
 	gen            uint64        // increments to invalidate in-flight async operations
-	ownerThread    *C.lua_State  // coroutine that created this socket (for request affinity)
+	ownerThread    *LuaThread    // thread context that created this socket (for request affinity)
 
 	// TCP-specific: internal read buffer for exact byte reads
 	readBuf    []byte
@@ -83,13 +83,14 @@ func getTCPSocketFromUserdata(L *C.lua_State, idx C.int) (*TCPSocket, uint64) {
 	return getTCPSocketByID(id), id
 }
 
-// checkTCPSocketAffinity verifies the socket belongs to the current thread.
+// checkTCPSocketAffinity verifies the socket belongs to the current thread context.
 // Returns true if affinity check passes.
 // Returns false and pushes (nil, "bad request") to Lua stack if it fails.
 func checkTCPSocketAffinity(L *C.lua_State, sock *TCPSocket, sockID uint64) bool {
-	if sock.ownerThread != L {
+	currentThread := getLuaThreadFromRegistry(L)
+	if sock.ownerThread != currentThread {
 		if debugEnabled {
-			debugLog("tcp: id=%d affinity check failed: owner=%p current=%p", sockID, sock.ownerThread, L)
+			debugLog("tcp: id=%d affinity check failed: owner=%p current=%p (co=%p)", sockID, sock.ownerThread, currentThread, L)
 		}
 		C.lua_pushnil(L)
 		pushGoString(L, "bad request")
@@ -157,11 +158,12 @@ func consumeLineFromBuffer(sock *TCPSocket) (string, bool) {
 
 //export golapis_socket_tcp_new
 func golapis_socket_tcp_new(L *C.lua_State) C.int {
+	thread := getLuaThreadFromRegistry(L)
 	sock := &TCPSocket{
 		connectTimeout: 0,
 		readTimeout:    0,
 		writeTimeout:   0,
-		ownerThread:    L,
+		ownerThread:    thread,
 	}
 	id := registerTCPSocket(sock)
 
