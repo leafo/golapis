@@ -92,6 +92,7 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 		logHTTPRequest(r, startTime, http.StatusOK, 0)
 	})
 
+	fmt.Printf("Listening on http://localhost:%s\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 

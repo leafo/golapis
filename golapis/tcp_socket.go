@@ -86,8 +86,11 @@ func getTCPSocketFromUserdata(L *C.lua_State, idx C.int) (*TCPSocket, uint64) {
 // checkTCPSocketAffinity verifies the socket belongs to the current thread.
 // Returns true if affinity check passes.
 // Returns false and pushes (nil, "bad request") to Lua stack if it fails.
-func checkTCPSocketAffinity(L *C.lua_State, sock *TCPSocket) bool {
+func checkTCPSocketAffinity(L *C.lua_State, sock *TCPSocket, sockID uint64) bool {
 	if sock.ownerThread != L {
+		if debugEnabled {
+			debugLog("tcp: id=%d affinity check failed: owner=%p current=%p", sockID, sock.ownerThread, L)
+		}
 		C.lua_pushnil(L)
 		pushGoString(L, "bad request")
 		return false
@@ -170,16 +173,19 @@ func golapis_socket_tcp_new(L *C.lua_State) C.int {
 	C.luaL_getmetatable_wrapper(L, cStrTCPMetatable)
 	C.lua_setmetatable(L, -2)
 
+	if debugEnabled {
+		debugLog("tcp.new: id=%d co=%p", id, L)
+	}
 	return 1
 }
 
 //export golapis_tcp_settimeout
 func golapis_tcp_settimeout(L *C.lua_State) C.int {
-	sock, _ := getTCPSocketFromUserdata(L, 1)
+	sock, sockID := getTCPSocketFromUserdata(L, 1)
 	if sock == nil {
 		return 0
 	}
-	if !checkTCPSocketAffinity(L, sock) {
+	if !checkTCPSocketAffinity(L, sock, sockID) {
 		return 2
 	}
 
@@ -199,11 +205,11 @@ func golapis_tcp_settimeout(L *C.lua_State) C.int {
 
 //export golapis_tcp_settimeouts
 func golapis_tcp_settimeouts(L *C.lua_State) C.int {
-	sock, _ := getTCPSocketFromUserdata(L, 1)
+	sock, sockID := getTCPSocketFromUserdata(L, 1)
 	if sock == nil {
 		return 0
 	}
-	if !checkTCPSocketAffinity(L, sock) {
+	if !checkTCPSocketAffinity(L, sock, sockID) {
 		return 2
 	}
 
@@ -225,13 +231,13 @@ func golapis_tcp_settimeouts(L *C.lua_State) C.int {
 
 //export golapis_tcp_connect
 func golapis_tcp_connect(L *C.lua_State) C.int {
-	sock, _ := getTCPSocketFromUserdata(L, 1)
+	sock, sockID := getTCPSocketFromUserdata(L, 1)
 	if sock == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "invalid socket")
 		return 2
 	}
-	if !checkTCPSocketAffinity(L, sock) {
+	if !checkTCPSocketAffinity(L, sock, sockID) {
 		return 2
 	}
 
@@ -277,6 +283,9 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 		timeout := sock.connectTimeout
 		gen := sock.gen
 
+		if debugEnabled {
+			debugLog("tcp.connect: id=%d unix=%s timeout=%v", sockID, path, timeout)
+		}
 		sock.connecting = true
 		go func() {
 			var conn net.Conn
@@ -289,6 +298,9 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			}
 
 			if err != nil {
+				if debugEnabled {
+					debugLog("tcp.connect: id=%d unix=%s error=%s", sockID, path, normalizeNetError(err))
+				}
 				thread.state.eventChan <- &StateEvent{
 					Type:       EventResumeThread,
 					Thread:     thread,
@@ -300,6 +312,9 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 				return
 			}
 
+			if debugEnabled {
+				debugLog("tcp.connect: id=%d unix=%s connected", sockID, path)
+			}
 			thread.state.eventChan <- &StateEvent{
 				Type:       EventResumeThread,
 				Thread:     thread,
@@ -341,7 +356,11 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 	host := arg1
 	timeout := sock.connectTimeout
 	gen := sock.gen
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
+	if debugEnabled {
+		debugLog("tcp.connect: id=%d addr=%s timeout=%v", sockID, addr, timeout)
+	}
 	sock.connecting = true
 	go func() {
 		var conn net.Conn
@@ -352,9 +371,12 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			dialer.Timeout = timeout
 		}
 
-		conn, err = dialer.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		conn, err = dialer.Dial("tcp", addr)
 
 		if err != nil {
+			if debugEnabled {
+				debugLog("tcp.connect: id=%d addr=%s error=%s", sockID, addr, normalizeNetError(err))
+			}
 			thread.state.eventChan <- &StateEvent{
 				Type:       EventResumeThread,
 				Thread:     thread,
@@ -366,6 +388,9 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			return
 		}
 
+		if debugEnabled {
+			debugLog("tcp.connect: id=%d addr=%s connected", sockID, addr)
+		}
 		thread.state.eventChan <- &StateEvent{
 			Type:       EventResumeThread,
 			Thread:     thread,
@@ -388,13 +413,13 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 
 //export golapis_tcp_send
 func golapis_tcp_send(L *C.lua_State) C.int {
-	sock, _ := getTCPSocketFromUserdata(L, 1)
+	sock, sockID := getTCPSocketFromUserdata(L, 1)
 	if sock == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "invalid socket")
 		return 2
 	}
-	if !checkTCPSocketAffinity(L, sock) {
+	if !checkTCPSocketAffinity(L, sock, sockID) {
 		return 2
 	}
 
@@ -442,24 +467,30 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 
 	n, err := sock.conn.Write(data)
 	if err != nil {
+		if debugEnabled {
+			debugLog("tcp.send: id=%d bytes=%d error=%s", sockID, len(data), normalizeNetError(err))
+		}
 		C.lua_pushnil(L)
 		pushGoString(L, normalizeNetError(err))
 		return 2
 	}
 
+	if debugEnabled {
+		debugLog("tcp.send: id=%d bytes=%d sent=%d", sockID, len(data), n)
+	}
 	C.lua_pushinteger(L, C.lua_Integer(n))
 	return 1
 }
 
 //export golapis_tcp_receive
 func golapis_tcp_receive(L *C.lua_State) C.int {
-	sock, _ := getTCPSocketFromUserdata(L, 1)
+	sock, sockID := getTCPSocketFromUserdata(L, 1)
 	if sock == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "invalid socket")
 		return 2
 	}
-	if !checkTCPSocketAffinity(L, sock) {
+	if !checkTCPSocketAffinity(L, sock, sockID) {
 		return 2
 	}
 
@@ -562,6 +593,13 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 	conn := sock.conn
 	gen := sock.gen
 
+	if debugEnabled {
+		if mode == "size" {
+			debugLog("tcp.receive: id=%d mode=%s size=%d timeout=%v", sockID, mode, size, timeout)
+		} else {
+			debugLog("tcp.receive: id=%d mode=%s timeout=%v", sockID, mode, timeout)
+		}
+	}
 	sock.reading = true
 	switch mode {
 	case "size":
@@ -597,6 +635,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 					if err == io.EOF {
 						errStr = "closed"
 					}
+					if debugEnabled {
+						debugLog("tcp.receive: id=%d mode=size error=%s partial=%d", sockID, errStr, len(result))
+					}
 					thread.state.eventChan <- &StateEvent{
 						Type:       EventResumeThread,
 						Thread:     thread,
@@ -609,6 +650,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 				}
 			}
 
+			if debugEnabled {
+				debugLog("tcp.receive: id=%d mode=size received=%d", sockID, len(result))
+			}
 			dataStr := string(result)
 			thread.state.eventChan <- &StateEvent{
 				Type:       EventResumeThread,
@@ -645,6 +689,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 				}
 				if err != nil {
 					if err == io.EOF {
+						if debugEnabled {
+							debugLog("tcp.receive: id=%d mode=all received=%d (EOF)", sockID, len(result))
+						}
 						thread.state.eventChan <- &StateEvent{
 							Type:       EventResumeThread,
 							Thread:     thread,
@@ -660,6 +707,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 					}
 
 					errStr := normalizeNetError(err)
+					if debugEnabled {
+						debugLog("tcp.receive: id=%d mode=all error=%s partial=%d", sockID, errStr, len(result))
+					}
 					thread.state.eventChan <- &StateEvent{
 						Type:       EventResumeThread,
 						Thread:     thread,
@@ -707,6 +757,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 							line = filtered
 						}
 
+						if debugEnabled {
+							debugLog("tcp.receive: id=%d mode=line received=%d", sockID, len(line))
+						}
 						thread.state.eventChan <- &StateEvent{
 							Type:       EventResumeThread,
 							Thread:     thread,
@@ -746,6 +799,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						}
 						partial = filtered
 					}
+					if debugEnabled {
+						debugLog("tcp.receive: id=%d mode=line error=%s partial=%d", sockID, errStr, len(partial))
+					}
 					thread.state.eventChan <- &StateEvent{
 						Type:       EventResumeThread,
 						Thread:     thread,
@@ -765,13 +821,13 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 
 //export golapis_tcp_close
 func golapis_tcp_close(L *C.lua_State) C.int {
-	sock, _ := getTCPSocketFromUserdata(L, 1)
+	sock, sockID := getTCPSocketFromUserdata(L, 1)
 	if sock == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "invalid socket")
 		return 2
 	}
-	if !checkTCPSocketAffinity(L, sock) {
+	if !checkTCPSocketAffinity(L, sock, sockID) {
 		return 2
 	}
 
@@ -798,19 +854,22 @@ func golapis_tcp_close(L *C.lua_State) C.int {
 	sock.writing = false
 	sock.gen++
 
+	if debugEnabled {
+		debugLog("tcp.close: id=%d", sockID)
+	}
 	C.lua_pushinteger(L, 1)
 	return 1
 }
 
 //export golapis_tcp_setkeepalive
 func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
-	sock, _ := getTCPSocketFromUserdata(L, 1)
+	sock, sockID := getTCPSocketFromUserdata(L, 1)
 	if sock == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "invalid socket")
 		return 2
 	}
-	if !checkTCPSocketAffinity(L, sock) {
+	if !checkTCPSocketAffinity(L, sock, sockID) {
 		return 2
 	}
 
@@ -844,6 +903,9 @@ func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
 	sock.writing = false
 	sock.gen++
 
+	if debugEnabled {
+		debugLog("tcp.setkeepalive: id=%d", sockID)
+	}
 	C.lua_pushinteger(L, 1)
 	return 1
 }
@@ -864,6 +926,9 @@ func golapis_tcp_getreusedtimes(L *C.lua_State) C.int {
 func golapis_tcp_gc(L *C.lua_State) C.int {
 	sock, id := getTCPSocketFromUserdata(L, 1)
 	if sock != nil {
+		if debugEnabled {
+			debugLog("tcp.gc: id=%d closed=%v connected=%v", id, sock.closed, sock.connected)
+		}
 		if !sock.closed && sock.conn != nil {
 			sock.conn.Close()
 		}
