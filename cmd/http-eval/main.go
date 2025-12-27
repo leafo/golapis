@@ -70,18 +70,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Check if file exists (when using file mode, skip for stdin)
-	if filename != "" && filename != "-" {
-		if _, err := os.Stat(filename); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Error: script file not found: %s\n", filename)
-			os.Exit(1)
-		}
-	}
-
 	// Check for stdin conflict
 	if filename == "-" && *body == "-" {
 		fmt.Fprintln(os.Stderr, "Error: cannot read both script and body from stdin")
 		os.Exit(1)
+	}
+
+	// Build the entry point
+	var entry golapis.EntryPoint
+	if *execCode != "" {
+		entry = golapis.CodeEntryPoint{Code: *execCode}
+	} else if filename == "-" {
+		stdinBytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading stdin: %v\n", err)
+			os.Exit(1)
+		}
+		entry = golapis.CodeEntryPoint{Code: string(stdinBytes)}
+	} else {
+		if _, err := os.Stat(filename); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Error: script file not found: %s\n", filename)
+			os.Exit(1)
+		}
+		entry = golapis.FileEntryPoint{Filename: filename}
 	}
 
 	// Read body from stdin or file if specified
@@ -123,27 +134,10 @@ func main() {
 		lua.SetupNgxAlias()
 	}
 
-	// Preload the entrypoint
-	if *execCode != "" {
-		if err := lua.PreloadEntryPointString(*execCode); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to load Lua code: %v\n", err)
-			os.Exit(1)
-		}
-	} else if filename == "-" {
-		stdinBytes, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading stdin: %v\n", err)
-			os.Exit(1)
-		}
-		if err := lua.PreloadEntryPointString(string(stdinBytes)); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to load Lua code from stdin: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		if err := lua.PreloadEntryPointFile(filename); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to load Lua script %s: %v\n", filename, err)
-			os.Exit(1)
-		}
+	// Load the entrypoint
+	if err := lua.LoadEntryPoint(entry); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load Lua script %s: %v\n", entry, err)
+		os.Exit(1)
 	}
 
 	lua.Start()

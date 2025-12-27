@@ -13,38 +13,6 @@ import (
 // DefaultClientMaxBodySize is the default maximum request body size (1MB)
 const DefaultClientMaxBodySize int64 = 1 * 1024 * 1024
 
-// EntryPoint represents a source of Lua code to execute
-type EntryPoint interface {
-	preload(gls *GolapisLuaState) error
-	String() string // for logging
-}
-
-// FileEntryPoint loads Lua code from a file
-type FileEntryPoint struct {
-	Filename string
-}
-
-func (f FileEntryPoint) preload(gls *GolapisLuaState) error {
-	return gls.PreloadEntryPointFile(f.Filename)
-}
-
-func (f FileEntryPoint) String() string {
-	return f.Filename
-}
-
-// CodeEntryPoint loads Lua code from a string
-type CodeEntryPoint struct {
-	Code string
-}
-
-func (c CodeEntryPoint) preload(gls *GolapisLuaState) error {
-	return gls.PreloadEntryPointString(c.Code)
-}
-
-func (c CodeEntryPoint) String() string {
-	return "(code string)"
-}
-
 // HTTPServerConfig holds configuration for the HTTP server
 type HTTPServerConfig struct {
 	ClientMaxBodySize int64 // max request body size in bytes (0 = unlimited)
@@ -58,8 +26,8 @@ func DefaultHTTPServerConfig() *HTTPServerConfig {
 	}
 }
 
-// HTTPHandler returns an http.Handler that executes the preloaded entrypoint for each request.
-// The GolapisLuaState must have Start() called and an entrypoint preloaded before use.
+// HTTPHandler returns an http.Handler that executes the loaded entrypoint for each request.
+// The GolapisLuaState must have Start() called and an entrypoint loaded before use.
 func (gls *GolapisLuaState) HTTPHandler(config *HTTPServerConfig) http.Handler {
 	if config == nil {
 		config = DefaultHTTPServerConfig()
@@ -104,8 +72,8 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 		lua.SetupNgxAlias()
 	}
 
-	// Preload the entrypoint at startup
-	if err := entry.preload(lua); err != nil {
+	// Load the entrypoint at startup
+	if err := lua.LoadEntryPoint(entry); err != nil {
 		lua.Close()
 		log.Fatalf("Failed to load Lua script %s: %v", entry, err)
 	}

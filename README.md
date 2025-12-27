@@ -59,6 +59,41 @@ if err != nil {
 
 `Wait()` blocks until all active threads have completed execution.
 
+### Precompiled Entry Points
+
+`RunString` and `RunFile` parse and compile the Lua code on each call. For code
+that needs to run multiple times (e.g., HTTP request handlers), use
+`LoadEntryPoint` to compile & load once and execute many times:
+
+```go
+lua := golapis.NewGolapisLuaState()
+defer lua.Close()
+
+// Create an entry point from a file or code string
+entry := golapis.FileEntryPoint{Filename: "handler.lua"}
+// or: entry := golapis.CodeEntryPoint{Code: `local name = ...; golapis.say("hello ", name)`}
+
+// Compile once at startup
+if err := lua.LoadEntryPoint(entry); err != nil {
+    log.Fatal(err)
+}
+
+lua.Start()
+defer lua.Stop()
+
+// Execute the precompiled code, with support for arguments to be passed to the chunk
+if err := lua.RunEntryPoint("world"); err != nil {
+    log.Printf("Error: %v", err)
+}
+```
+
+The `EntryPoint` interface has two implementations:
+- `FileEntryPoint{Filename: "path/to/file.lua"}` - loads from a file
+- `CodeEntryPoint{Code: "lua code here"}` - loads from a string
+
+This is how `StartHTTPServer` works internally - it precompiles the entry point
+once at startup, then executes it for each incoming request without reparsing.
+
 ### Output Handling
 
 By default, output from `golapis.say()` and `golapis.print()` goes to stdout. You can redirect it:

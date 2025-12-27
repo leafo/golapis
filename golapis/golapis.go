@@ -72,7 +72,7 @@ func LuaJITVersion() string {
 type GolapisLuaState struct {
 	luaState      *C.lua_State
 	golapisRef    C.int // registry reference to golapis table
-	entrypointRef C.int // registry reference to preloaded entrypoint function (0 = not set)
+	entrypointRef C.int // registry reference to loaded entrypoint function (0 = not set)
 	outputBuffer  *bytes.Buffer
 	outputWriter  io.Writer
 	// Note: sends from the event loop goroutine can block if this buffer is full;
@@ -113,7 +113,7 @@ type StateEventType int
 const (
 	EventRunFile StateEventType = iota
 	EventRunString
-	EventRunEntryPoint // run the preloaded entrypoint
+	EventRunEntryPoint // run the loaded entrypoint
 	EventResumeThread  // async operation completed
 	EventTimerFire     // timer expired, execute callback
 	EventStop          // shutdown the event loop
@@ -274,6 +274,20 @@ func (gls *GolapisLuaState) RunString(code string) error {
 	return result.Error
 }
 
+// RunEntryPoint executes the loaded entry point with optional arguments.
+// Arguments are passed to the Lua chunk and become available as ... in the script.
+// Use LoadEntryPoint to compile the code first.
+func (gls *GolapisLuaState) RunEntryPoint(args ...interface{}) error {
+	resp := make(chan *StateResponse, 1)
+	gls.eventChan <- &StateEvent{
+		Type:       EventRunEntryPoint,
+		ReturnVals: args,
+		Response:   resp,
+	}
+	result := <-resp
+	return result.Error
+}
+
 // RequireModule executes require("name") to load a module
 func (gls *GolapisLuaState) RequireModule(name string) error {
 	return gls.RunString(fmt.Sprintf("require(%q)", name))
@@ -353,14 +367,14 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 	return nil
 }
 
-// handleRunEntryPoint executes the preloaded entrypoint function (internal, called by event loop)
+// handleRunEntryPoint executes the loaded entrypoint function (internal, called by event loop)
 // Returns nil if thread is still running (response will be sent later via thread.responseChan)
 func (gls *GolapisLuaState) handleRunEntryPoint(event *StateEvent) *StateResponse {
 	if gls.entrypointRef == 0 {
-		return &StateResponse{Error: errors.New("no entrypoint preloaded")}
+		return &StateResponse{Error: errors.New("no entrypoint loaded")}
 	}
 
-	// Retrieve preloaded entrypoint from registry
+	// Retrieve loaded entrypoint from registry
 	C.lua_rawgeti_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.entrypointRef)
 
 	thread, err := gls.newThread()
@@ -373,7 +387,7 @@ func (gls *GolapisLuaState) handleRunEntryPoint(event *StateEvent) *StateRespons
 	thread.outputWriter = event.OutputWriter
 	thread.request = event.Request
 
-	if err := thread.resume(nil); err != nil {
+	if err := thread.resume(event.ReturnVals); err != nil {
 		thread.close()
 		return &StateResponse{Error: err}
 	}
@@ -617,24 +631,9 @@ func (gls *GolapisLuaState) storeEntryPoint() {
 	gls.entrypointRef = C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
 }
 
-// PreloadEntryPointFile loads a Lua or MoonScript file and stores the compiled function in the registry.
-// This should be called once at startup for HTTP mode to avoid reloading per-request.
-func (gls *GolapisLuaState) PreloadEntryPointFile(filename string) error {
-	if err := gls.loadFile(filename); err != nil {
-		return err
-	}
-	gls.storeEntryPoint()
-	return nil
-}
-
-// PreloadEntryPointString loads a Lua code string and stores the compiled function in the registry.
-// This should be called once at startup for HTTP mode to avoid reloading per-request.
-func (gls *GolapisLuaState) PreloadEntryPointString(code string) error {
-	if err := gls.loadString(code); err != nil {
-		return err
-	}
-	gls.storeEntryPoint()
-	return nil
+// LoadEntryPoint loads an EntryPoint (file or code string) and stores the compiled function in the registry.
+func (gls *GolapisLuaState) LoadEntryPoint(entry EntryPoint) error {
+	return entry.load(gls)
 }
 
 // SetupNgxAlias sets the global "ngx" to the golapis table for nginx-lua compatibility
