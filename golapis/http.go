@@ -13,6 +13,38 @@ import (
 // DefaultClientMaxBodySize is the default maximum request body size (1MB)
 const DefaultClientMaxBodySize int64 = 1 * 1024 * 1024
 
+// EntryPoint represents a source of Lua code to execute
+type EntryPoint interface {
+	preload(gls *GolapisLuaState) error
+	String() string // for logging
+}
+
+// FileEntryPoint loads Lua code from a file
+type FileEntryPoint struct {
+	Filename string
+}
+
+func (f FileEntryPoint) preload(gls *GolapisLuaState) error {
+	return gls.PreloadEntryPointFile(f.Filename)
+}
+
+func (f FileEntryPoint) String() string {
+	return f.Filename
+}
+
+// CodeEntryPoint loads Lua code from a string
+type CodeEntryPoint struct {
+	Code string
+}
+
+func (c CodeEntryPoint) preload(gls *GolapisLuaState) error {
+	return gls.PreloadEntryPointString(c.Code)
+}
+
+func (c CodeEntryPoint) String() string {
+	return "(code string)"
+}
+
 // HTTPServerConfig holds configuration for the HTTP server
 type HTTPServerConfig struct {
 	ClientMaxBodySize int64 // max request body size in bytes (0 = unlimited)
@@ -56,8 +88,8 @@ func (gls *GolapisLuaState) HTTPHandler(config *HTTPServerConfig) http.Handler {
 
 // StartHTTPServer starts an HTTP server that executes the given Lua script for each request
 // Uses a single shared GolapisLuaState for all requests with cooperative scheduling
-func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
-	fmt.Printf("Starting HTTP server on port %s with script: %s\n", port, filename)
+func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
+	fmt.Printf("Starting HTTP server on port %s with script: %s\n", port, entry)
 	if config == nil {
 		config = DefaultHTTPServerConfig()
 	}
@@ -72,10 +104,10 @@ func StartHTTPServer(filename, port string, config *HTTPServerConfig) {
 		lua.SetupNgxAlias()
 	}
 
-	// Preload the entrypoint file at startup
-	if err := lua.PreloadEntryPointFile(filename); err != nil {
+	// Preload the entrypoint at startup
+	if err := entry.preload(lua); err != nil {
 		lua.Close()
-		log.Fatalf("Failed to load Lua script %s: %v", filename, err)
+		log.Fatalf("Failed to load Lua script %s: %v", entry, err)
 	}
 
 	// Start the event loop (runs for lifetime of server)

@@ -58,11 +58,16 @@ func main() {
 	}
 
 	if *httpFlag {
-		if filename == "" {
-			fmt.Fprintln(os.Stderr, "HTTP mode requires a script file")
+		var entry golapis.EntryPoint
+		if *eFlag != "" {
+			entry = golapis.CodeEntryPoint{Code: *eFlag}
+		} else if filename != "" {
+			entry = golapis.FileEntryPoint{Filename: filename}
+		} else {
+			fmt.Fprintln(os.Stderr, "HTTP mode requires a script file or -e code")
 			os.Exit(1)
 		}
-		startHTTPServer(filename, *portFlag, *ngxFlag)
+		startHTTPServer(entry, *portFlag, *ngxFlag)
 	} else {
 		runSingleExecution(filename, scriptArgs, *lFlag, *eFlag, *ngxFlag)
 	}
@@ -133,8 +138,8 @@ func runSingleExecution(filename string, scriptArgs []string, requireLib string,
 	lua.Wait()
 }
 
-func startHTTPServer(filename, port string, ngxAlias bool) {
+func startHTTPServer(entry golapis.EntryPoint, port string, ngxAlias bool) {
 	config := golapis.DefaultHTTPServerConfig()
 	config.NgxAlias = ngxAlias
-	golapis.StartHTTPServer(filename, port, config)
+	golapis.StartHTTPServer(entry, port, config)
 }
