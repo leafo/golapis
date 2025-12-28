@@ -12,6 +12,98 @@ code on the command line or start a webserver with an entry file, and a Go
 library that can be embedded into an existing Go project to initiate a Golapis
 server within `net/http`.
 
+## Command Line Interface
+
+```
+golapis [options] [script [args]]
+
+Options:
+  -e stat  execute string 'stat'
+  -l name  require library 'name'
+  -v       show version information
+  --       stop handling options
+  -        execute stdin and stop handling options
+  --http   start HTTP server mode
+  --port   port for HTTP server (default 8080)
+  --ngx    alias golapis table to global ngx
+  --file-server PATH[:URL] serve static files (can be repeated)
+```
+
+### Running Scripts
+
+```bash
+# Run a Lua file
+golapis script.lua
+
+# Run inline code
+golapis -e 'print("hello")'
+
+# Run from stdin
+echo 'print("hello")' | golapis -
+
+# Pass arguments to script (accessible via `arg` table)
+golapis script.lua arg1 arg2
+```
+
+### HTTP Server Mode
+
+Start an HTTP server that executes a Lua script for each request:
+
+```bash
+# Start server on default port 8080
+golapis --http app.lua
+
+# Specify a different port
+golapis --http --port 3000 app.lua
+
+# Use inline code
+golapis --http -e 'golapis.say("Hello, " .. golapis.var.remote_addr)'
+```
+
+In HTTP mode, the script has access to request-specific APIs like `golapis.var`,
+`golapis.req`, `golapis.header`, and `golapis.status`.
+
+### nginx Compatibility (--ngx)
+
+For compatibility with existing lua-nginx-module code, the `--ngx` flag aliases
+the `golapis` table to the global `ngx`:
+
+```bash
+golapis --http --ngx app.lua
+```
+
+This allows existing code using `ngx.say()`, `ngx.var`, etc. to work without
+modification:
+
+```lua
+-- With --ngx flag, both work:
+ngx.say("Hello")      -- nginx-style
+golapis.say("Hello")  -- golapis-style
+```
+
+### Static File Server (--file-server)
+
+Serve static files alongside your Lua application:
+
+```bash
+# Serve ./static directory at /static/ URL prefix
+golapis --http --file-server static app.lua
+
+# Explicit mapping: local path to URL prefix
+golapis --http --file-server ./assets:/static/ app.lua
+
+# Multiple directories
+golapis --http --file-server static --file-server uploads app.lua
+```
+
+The shorthand `--file-server static` is equivalent to `--file-server static:static`,
+serving the `static` directory at `/static/`. For paths like `./static` or
+`/var/www/files`, the URL prefix is derived from the directory name (`static`
+and `files` respectively).
+
+Static file routes take precedence over the Lua handler, so requests to
+`/static/style.css` will serve the file directly without invoking your Lua script.
+
 ## Go Interface
 
 ### Creating a State
