@@ -299,6 +299,35 @@ UDP cosocket API compatible with `ngx.socket.udp`.
 | `sock:bind(addr)` | Bind to local address before connecting |
 | `sock:close()` | Close the socket |
 
+### golapis.socket.tcp
+
+TCP cosocket API compatible with `ngx.socket.tcp`.
+
+| Method | Description |
+|--------|-------------|
+| `golapis.socket.tcp()` | Create a new TCP socket object |
+| `sock:connect(host, port)` | Connect to TCP server |
+| `sock:connect("unix:/path")` | Connect to Unix domain socket |
+| `sock:send(data)` | Send string or table of strings |
+| `sock:receive()` | Receive line (default mode) |
+| `sock:receive("*l")` | Receive line (strips \r) |
+| `sock:receive(n)` | Receive exactly n bytes |
+| `sock:receive("*a")` | Receive all until EOF |
+| `sock:receiveany(max)` | Receive up to max bytes available |
+| `sock:settimeout(ms)` | Set all timeouts in milliseconds |
+| `sock:settimeouts(connect_ms, send_ms, read_ms)` | Set individual timeouts |
+| `sock:close()` | Close the socket |
+| `sock:setkeepalive()` | Return to connection pool (stub) |
+| `sock:getreusedtimes()` | Get pool reuse count (always 0) |
+
+**Return values:**
+- `connect` returns `1` on success, `nil, error` on failure
+- `send` returns bytes sent on success, `nil, error` on failure
+- `receive` returns `data` on success, `nil, error, partial` on failure
+- `receiveany` returns `data` on success, `nil, error` on failure
+
+**Async behavior:** `connect`, `receive`, and `receiveany` are async and yield the current coroutine.
+
 ## Extensions
 
 Additional golapis functions not part of the ngx API:
