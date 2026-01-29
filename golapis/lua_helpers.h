@@ -59,6 +59,14 @@ static int lua_isboolean_wrapper(lua_State *L, int idx) {
     return lua_isboolean(L, idx);
 }
 
+static int lua_isnil_wrapper(lua_State *L, int idx) {
+    return lua_isnil(L, idx);
+}
+
+static int lua_istable_wrapper(lua_State *L, int idx) {
+    return lua_istable(L, idx);
+}
+
 static int lua_toboolean_wrapper(lua_State *L, int idx) {
     return lua_toboolean(L, idx);
 }

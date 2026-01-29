@@ -334,8 +334,78 @@ Additional golapis functions not part of the ngx API:
 
 | Function | Description |
 |----------|-------------|
-| `golapis.http.request(url)` | Simple async HTTP GET, returns `body, status, headers` |
+| `golapis.http.request(...)` | HTTP client (see below) |
 | `golapis.version` | Library version string |
+
+### golapis.http
+
+HTTP client API compatible with LuaSocket's `socket.http.request`.
+
+**Simple form:**
+
+```lua
+-- GET request
+local body, status, headers, statusline = golapis.http.request(url)
+
+-- POST request (auto-sets Content-Type to application/x-www-form-urlencoded)
+local body, status, headers, statusline = golapis.http.request(url, body)
+```
+
+**Generic form:**
+
+```lua
+local body, status, headers, statusline = golapis.http.request{
+    url = "https://example.com/api",
+    method = "POST",
+    body = '{"key": "value"}',
+    headers = {
+        ["content-type"] = "application/json",
+        ["authorization"] = "Bearer token"
+    }
+}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | string | required | Target URL |
+| `method` | string | "GET" | HTTP method |
+| `body` | string | nil | Request body |
+| `headers` | table | nil | Request headers |
+| `source` | function | nil | LTN12-style source iterator for body |
+| `sink` | function | nil | LTN12-style sink for response |
+| `redirect` | boolean | true | Follow redirects |
+| `maxredirects` | number | 5 | Maximum redirects |
+| `timeout` | number | 30 | Request timeout in seconds |
+
+**Return values:**
+- Success: `body, status, headers, statusline`
+- With sink: `1, status, headers, statusline`
+- Error: `nil, error_message`
+
+**Source/sink support** (LTN12-style):
+
+```lua
+local ltn12 = require("ltn12")
+
+-- Source: stream request body from string
+local body = "request data"
+golapis.http.request{
+    url = url,
+    method = "POST",
+    source = ltn12.source.string(body),
+    headers = {["content-length"] = #body}
+}
+
+-- Sink: stream response to table
+local response = {}
+local result, status, headers = golapis.http.request{
+    url = url,
+    sink = ltn12.sink.table(response)
+}
+local body = table.concat(response)
+```
+
+**Note:** Currently buffers entire request/response in memory. True streaming is not yet supported.
 
 ### golapis.debug
 

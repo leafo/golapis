@@ -6,6 +6,7 @@ package golapis
 // Forward declaration for Go functions
 extern int golapis_sleep(lua_State *L);
 extern int golapis_http_request(lua_State *L);
+extern int golapis_http_request_internal(lua_State *L);
 extern int golapis_print(lua_State *L);
 extern int golapis_say(lua_State *L);
 extern int golapis_req_get_uri_args(lua_State *L);
@@ -85,6 +86,10 @@ static int c_sleep_wrapper(lua_State *L) {
 
 static int c_http_request_wrapper(lua_State *L) {
     return golapis_http_request(L);
+}
+
+static int c_http_request_internal_wrapper(lua_State *L) {
+    return golapis_http_request_internal(L);
 }
 
 static int c_print_wrapper(lua_State *L) {
@@ -627,6 +632,8 @@ static int setup_golapis_global(lua_State *L) {
     lua_newtable(L);
     lua_pushcfunction(L, c_http_request_wrapper);
     lua_setfield(L, -2, "request");
+    lua_pushcfunction(L, c_http_request_internal_wrapper);
+    lua_setfield(L, -2, "_request");
     lua_setfield(L, -2, "http");        // Add http table to `golapis`
 
     // Create req table (for HTTP request inspection functions)
@@ -733,6 +740,9 @@ import (
 //go:embed bootstrap.lua
 var luaBootstrap string
 
+//go:embed http.lua
+var httpLua string
+
 // bufferPool is used to reduce allocations in golapisOutput
 var bufferPool = sync.Pool{
 	New: func() interface{} {
@@ -792,6 +802,206 @@ func golapis_http_request(L *C.lua_State) C.int {
 			Thread:     thread,
 			ResumeValues: returnVals,
 			Response:   nil,
+		}
+	}()
+
+	return C.lua_yield_wrapper(L, 0)
+}
+
+// Helper functions for extracting fields from Lua tables
+
+// getTableString extracts a string field from a Lua table at idx
+// Uses lua_tolstring to properly handle binary data with embedded NULs
+func getTableString(L *C.lua_State, idx C.int, field string) string {
+	cfield := C.CString(field)
+	defer C.free(unsafe.Pointer(cfield))
+	C.lua_getfield(L, idx, cfield)
+	defer C.lua_pop_wrapper(L, 1)
+	if C.lua_isstring(L, -1) != 0 {
+		var len C.size_t
+		cstr := C.lua_tolstring_wrapper(L, -1, &len)
+		return C.GoStringN(cstr, C.int(len))
+	}
+	return ""
+}
+
+// getTableStringDefault extracts a string field with a default value
+func getTableStringDefault(L *C.lua_State, idx C.int, field, def string) string {
+	s := getTableString(L, idx, field)
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+// getTableBoolDefault extracts a boolean field with a default value
+func getTableBoolDefault(L *C.lua_State, idx C.int, field string, def bool) bool {
+	cfield := C.CString(field)
+	defer C.free(unsafe.Pointer(cfield))
+	C.lua_getfield(L, idx, cfield)
+	defer C.lua_pop_wrapper(L, 1)
+	if C.lua_isnil_wrapper(L, -1) != 0 {
+		return def
+	}
+	return C.lua_toboolean(L, -1) != 0
+}
+
+// getTableIntDefault extracts an integer field with a default value
+func getTableIntDefault(L *C.lua_State, idx C.int, field string, def int) int {
+	cfield := C.CString(field)
+	defer C.free(unsafe.Pointer(cfield))
+	C.lua_getfield(L, idx, cfield)
+	defer C.lua_pop_wrapper(L, 1)
+	if C.lua_isnumber(L, -1) != 0 {
+		return int(C.lua_tonumber(L, -1))
+	}
+	return def
+}
+
+// getTableFloat64Default extracts a float64 field with a default value
+func getTableFloat64Default(L *C.lua_State, idx C.int, field string, def float64) float64 {
+	cfield := C.CString(field)
+	defer C.free(unsafe.Pointer(cfield))
+	C.lua_getfield(L, idx, cfield)
+	defer C.lua_pop_wrapper(L, 1)
+	if C.lua_isnumber(L, -1) != 0 {
+		return float64(C.lua_tonumber(L, -1))
+	}
+	return def
+}
+
+// getTableHeaders extracts a headers table to http.Header
+func getTableHeaders(L *C.lua_State, idx C.int, field string) http.Header {
+	headers := make(http.Header)
+	cfield := C.CString(field)
+	defer C.free(unsafe.Pointer(cfield))
+	C.lua_getfield(L, idx, cfield)
+	defer C.lua_pop_wrapper(L, 1)
+
+	if C.lua_istable_wrapper(L, -1) == 0 {
+		return headers
+	}
+
+	// Iterate over the headers table
+	C.lua_pushnil(L) // first key
+	for C.lua_next_wrapper(L, -2) != 0 {
+		// key at -2, value at -1
+		if C.lua_isstring(L, -2) != 0 && C.lua_isstring(L, -1) != 0 {
+			key := C.GoString(C.lua_tostring_wrapper(L, -2))
+			value := C.GoString(C.lua_tostring_wrapper(L, -1))
+			headers.Add(key, value)
+		}
+		C.lua_pop_wrapper(L, 1) // pop value, keep key for next iteration
+	}
+
+	return headers
+}
+
+//export golapis_http_request_internal
+func golapis_http_request_internal(L *C.lua_State) C.int {
+	if C.lua_istable_wrapper(L, 1) == 0 {
+		C.lua_pushnil(L)
+		pushGoString(L, "http._request expects table argument")
+		return 2
+	}
+
+	url := getTableString(L, 1, "url")
+	if url == "" {
+		C.lua_pushnil(L)
+		pushGoString(L, "missing url")
+		return 2
+	}
+
+	method := getTableStringDefault(L, 1, "method", "GET")
+	bodyStr := getTableString(L, 1, "body")
+	headers := getTableHeaders(L, 1, "headers")
+	followRedirects := getTableBoolDefault(L, 1, "redirect", true)
+	maxRedirects := getTableIntDefault(L, 1, "maxredirects", 5)
+	timeoutSecs := getTableFloat64Default(L, 1, "timeout", 30.0)
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "http._request: could not find thread context")
+		return 2
+	}
+
+	go func() {
+		var body io.Reader
+		if bodyStr != "" {
+			body = strings.NewReader(bodyStr)
+		}
+
+		req, err := http.NewRequest(method, url, body)
+		if err != nil {
+			thread.state.eventChan <- &StateEvent{
+				Type:         EventResumeThread,
+				Thread:       thread,
+				ResumeValues: []interface{}{nil, err.Error()},
+			}
+			return
+		}
+
+		// Set headers
+		for k, v := range headers {
+			for _, val := range v {
+				// Host header must be set via req.Host, not req.Header
+				if strings.EqualFold(k, "Host") {
+					req.Host = val
+				} else {
+					req.Header.Add(k, val)
+				}
+			}
+		}
+
+		// Configure redirect handling and timeout
+		redirectCount := 0
+		client := &http.Client{
+			Timeout: time.Duration(timeoutSecs * float64(time.Second)),
+			CheckRedirect: func(r *http.Request, via []*http.Request) error {
+				if !followRedirects {
+					return http.ErrUseLastResponse
+				}
+				redirectCount++
+				if redirectCount > maxRedirects {
+					return fmt.Errorf("stopped after %d redirects", maxRedirects)
+				}
+				return nil
+			},
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			thread.state.eventChan <- &StateEvent{
+				Type:         EventResumeThread,
+				Thread:       thread,
+				ResumeValues: []interface{}{nil, err.Error()},
+			}
+			return
+		}
+		defer resp.Body.Close()
+
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			thread.state.eventChan <- &StateEvent{
+				Type:         EventResumeThread,
+				Thread:       thread,
+				ResumeValues: []interface{}{nil, readErr.Error()},
+			}
+			return
+		}
+
+		statusLine := resp.Status // e.g., "200 OK"
+
+		thread.state.eventChan <- &StateEvent{
+			Type:   EventResumeThread,
+			Thread: thread,
+			ResumeValues: []interface{}{
+				string(respBody),
+				resp.StatusCode,
+				resp.Header,
+				statusLine,
+			},
 		}
 	}()
 
@@ -2096,6 +2306,12 @@ func (gls *GolapisLuaState) runBootstrap() error {
 
 	// Push golapis table from registry as argument
 	C.lua_rawgeti_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, gls.golapisRef)
+
+	// Set _http_src on golapis table for bootstrap to load
+	pushGoString(gls.luaState, httpLua)
+	chttpSrc := C.CString("_http_src")
+	defer C.free(unsafe.Pointer(chttpSrc))
+	C.lua_setfield(gls.luaState, -2, chttpSrc)
 
 	// Call bootstrap with 1 arg (golapis), 0 returns
 	if C.lua_pcall(gls.luaState, 1, 0, 0) != 0 {

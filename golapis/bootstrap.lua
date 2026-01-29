@@ -23,3 +23,10 @@ do
     end
   end
 end
+
+-- Load HTTP module wrapper (provides LuaSocket-style interface)
+do
+  local http_mod = assert(loadstring(golapis._http_src, "@http.lua"))()
+  golapis.http.request = http_mod.request
+  golapis._http_src = nil  -- Clean up after loading
+end
