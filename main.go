@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"golapis/golapis"
@@ -43,6 +44,7 @@ func main() {
 		fmt.Printf("  commit: %s\n", gitCommit)
 		fmt.Printf("  built:  %s\n", buildDate)
 		fmt.Printf("  luajit: %s\n", golapis.LuaJITVersion())
+		fmt.Printf("  go:     %s\n", runtime.Version())
 		os.Exit(0)
 	}
 
