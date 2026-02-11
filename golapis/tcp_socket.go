@@ -304,8 +304,8 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 					debugLog("tcp.connect: id=%d unix=%s error=%s", sockID, path, normalizeNetError(err))
 				}
 				thread.state.eventChan <- &StateEvent{
-					Type:       EventResumeThread,
-					Thread:     thread,
+					Type:         EventResumeThread,
+					Thread:       thread,
 					ResumeValues: []interface{}{nil, normalizeNetError(err)},
 					OnResume: func(event *StateEvent) {
 						sock.connecting = false
@@ -318,8 +318,8 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 				debugLog("tcp.connect: id=%d unix=%s connected", sockID, path)
 			}
 			thread.state.eventChan <- &StateEvent{
-				Type:       EventResumeThread,
-				Thread:     thread,
+				Type:         EventResumeThread,
+				Thread:       thread,
 				ResumeValues: []interface{}{1},
 				OnResume: func(event *StateEvent) {
 					sock.connecting = false
@@ -380,8 +380,8 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 				debugLog("tcp.connect: id=%d addr=%s error=%s", sockID, addr, normalizeNetError(err))
 			}
 			thread.state.eventChan <- &StateEvent{
-				Type:       EventResumeThread,
-				Thread:     thread,
+				Type:         EventResumeThread,
+				Thread:       thread,
 				ResumeValues: []interface{}{nil, normalizeNetError(err)},
 				OnResume: func(event *StateEvent) {
 					sock.connecting = false
@@ -394,8 +394,8 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			debugLog("tcp.connect: id=%d addr=%s connected", sockID, addr)
 		}
 		thread.state.eventChan <- &StateEvent{
-			Type:       EventResumeThread,
-			Thread:     thread,
+			Type:         EventResumeThread,
+			Thread:       thread,
 			ResumeValues: []interface{}{1},
 			OnResume: func(event *StateEvent) {
 				sock.connecting = false
@@ -641,8 +641,8 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						debugLog("tcp.receive: id=%d mode=size error=%s partial=%d", sockID, errStr, len(result))
 					}
 					thread.state.eventChan <- &StateEvent{
-						Type:       EventResumeThread,
-						Thread:     thread,
+						Type:         EventResumeThread,
+						Thread:       thread,
 						ResumeValues: []interface{}{nil, errStr, string(result)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
@@ -657,8 +657,8 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 			}
 			dataStr := string(result)
 			thread.state.eventChan <- &StateEvent{
-				Type:       EventResumeThread,
-				Thread:     thread,
+				Type:         EventResumeThread,
+				Thread:       thread,
 				ResumeValues: []interface{}{dataStr},
 				OnResume: func(event *StateEvent) {
 					sock.reading = false
@@ -695,8 +695,8 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 							debugLog("tcp.receive: id=%d mode=all received=%d (EOF)", sockID, len(result))
 						}
 						thread.state.eventChan <- &StateEvent{
-							Type:       EventResumeThread,
-							Thread:     thread,
+							Type:         EventResumeThread,
+							Thread:       thread,
 							ResumeValues: []interface{}{string(result)},
 							OnResume: func(event *StateEvent) {
 								sock.reading = false
@@ -713,8 +713,8 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						debugLog("tcp.receive: id=%d mode=all error=%s partial=%d", sockID, errStr, len(result))
 					}
 					thread.state.eventChan <- &StateEvent{
-						Type:       EventResumeThread,
-						Thread:     thread,
+						Type:         EventResumeThread,
+						Thread:       thread,
 						ResumeValues: []interface{}{nil, errStr, string(result)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
@@ -763,8 +763,8 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 							debugLog("tcp.receive: id=%d mode=line received=%d", sockID, len(line))
 						}
 						thread.state.eventChan <- &StateEvent{
-							Type:       EventResumeThread,
-							Thread:     thread,
+							Type:         EventResumeThread,
+							Thread:       thread,
 							ResumeValues: []interface{}{string(line)},
 							OnResume: func(event *StateEvent) {
 								sock.reading = false
@@ -805,8 +805,8 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						debugLog("tcp.receive: id=%d mode=line error=%s partial=%d", sockID, errStr, len(partial))
 					}
 					thread.state.eventChan <- &StateEvent{
-						Type:       EventResumeThread,
-						Thread:     thread,
+						Type:         EventResumeThread,
+						Thread:       thread,
 						ResumeValues: []interface{}{nil, errStr, string(partial)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false

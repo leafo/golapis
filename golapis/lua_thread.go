@@ -8,8 +8,50 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"unsafe"
 )
+
+// LuaPusher is implemented by types that know how to push themselves
+// onto a Lua stack as a single value (table, userdata, etc.).
+type LuaPusher interface {
+	PushToLua(L *C.lua_State)
+}
+
+// CaptureResponse represents the result of a location.capture subrequest,
+// pushed to Lua as a table with {status, body, header} fields.
+type CaptureResponse struct {
+	Status  int
+	Body    string
+	Headers http.Header
+}
+
+// PushToLua pushes the capture response as a Lua table onto L's stack.
+func (cr CaptureResponse) PushToLua(L *C.lua_State) {
+	C.lua_newtable_wrapper(L)
+
+	C.lua_pushinteger(L, C.lua_Integer(cr.Status))
+	cstatus := C.CString("status")
+	C.lua_setfield(L, -2, cstatus)
+	C.free(unsafe.Pointer(cstatus))
+
+	pushGoString(L, cr.Body)
+	cbody := C.CString("body")
+	C.lua_setfield(L, -2, cbody)
+	C.free(unsafe.Pointer(cbody))
+
+	C.lua_newtable_wrapper(L)
+	for key, values := range cr.Headers {
+		if len(values) > 0 {
+			pushGoString(L, key)
+			pushGoString(L, values[0])
+			C.lua_settable(L, -3)
+		}
+	}
+	cheader := C.CString("header")
+	C.lua_setfield(L, -2, cheader)
+	C.free(unsafe.Pointer(cheader))
+}
 
 // Static C strings - allocated once at package init, never freed
 var cStrCtx *C.char
@@ -277,6 +319,8 @@ func (t *LuaThread) resumeInternal(values []interface{}, initialArgCount int) er
 						}
 						C.lua_settable(coctx.co, -3)
 					}
+				case LuaPusher:
+					val.PushToLua(coctx.co)
 				default:
 					C.lua_pushnil(coctx.co) // unsupported type, push nil
 				}

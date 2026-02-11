@@ -66,6 +66,9 @@ extern int golapis_tcp_setkeepalive(lua_State *L);
 extern int golapis_tcp_getreusedtimes(lua_State *L);
 extern int golapis_tcp_gc(lua_State *L);
 
+// Location capture (internal subrequest)
+extern int golapis_location_capture(lua_State *L);
+
 // Phase detection
 extern int golapis_get_phase(lua_State *L);
 
@@ -427,6 +430,10 @@ static int c_get_phase_wrapper(lua_State *L) {
     return golapis_get_phase(L);
 }
 
+static int c_location_capture_wrapper(lua_State *L) {
+    return golapis_location_capture(L);
+}
+
 // Main table __index metamethod
 // Stack: [golapis_table, key]
 static int c_main_index_wrapper(lua_State *L) {
@@ -692,6 +699,12 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "tcp");
     lua_setfield(L, -2, "socket");      // golapis.socket = { udp = fn, tcp = fn }
 
+    // Create location table (for internal subrequests)
+    lua_newtable(L);
+    lua_pushcfunction(L, c_location_capture_wrapper);
+    lua_setfield(L, -2, "capture");
+    lua_setfield(L, -2, "location");     // golapis.location = { capture = fn }
+
     // Add get_phase function (for ngx compatibility)
     lua_pushcfunction(L, c_get_phase_wrapper);
     lua_setfield(L, -2, "get_phase");
@@ -730,6 +743,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -798,10 +812,10 @@ func golapis_http_request(L *C.lua_State) C.int {
 		}
 
 		thread.state.eventChan <- &StateEvent{
-			Type:       EventResumeThread,
-			Thread:     thread,
+			Type:         EventResumeThread,
+			Thread:       thread,
 			ResumeValues: returnVals,
-			Response:   nil,
+			Response:     nil,
 		}
 	}()
 
@@ -1008,6 +1022,91 @@ func golapis_http_request_internal(L *C.lua_State) C.int {
 	return C.lua_yield_wrapper(L, 0)
 }
 
+//export golapis_location_capture
+func golapis_location_capture(L *C.lua_State) C.int {
+	if C.lua_gettop(L) < 1 || C.lua_type(L, 1) != C.LUA_TSTRING {
+		C.lua_pushnil(L)
+		pushGoString(L, "location.capture expects a URI string")
+		return 2
+	}
+
+	uri := C.GoString(C.lua_tostring_wrapper(L, 1))
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "location.capture: could not find thread context")
+		return 2
+	}
+	if thread.request == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "location.capture can only be called from HTTP request context")
+		return 2
+	}
+
+	// Create synthetic HTTP request for the subrequest
+	parsedURL, err := url.Parse(uri)
+	if err != nil {
+		C.lua_pushnil(L)
+		pushGoString(L, fmt.Sprintf("location.capture: invalid URI: %s", err))
+		return 2
+	}
+
+	httpReq := &http.Request{
+		Method:     "GET",
+		URL:        parsedURL,
+		RequestURI: uri,
+		Header:     make(http.Header),
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+	}
+
+	req := NewGolapisRequest(httpReq)
+
+	// Create output buffer to capture subrequest response
+	var buf bytes.Buffer
+
+	go func() {
+		resp := make(chan *StateResponse, 1)
+		thread.state.eventChan <- &StateEvent{
+			Type:         EventRunEntryPoint,
+			OutputWriter: &buf,
+			Request:      req,
+			Response:     resp,
+		}
+
+		result := <-resp
+
+		// Determine status and body from subrequest result
+		capturedStatus := 200
+		capturedBody := buf.String()
+		var capturedHeaders http.Header
+
+		if result.Error != nil {
+			capturedStatus = 500
+			capturedBody = result.Error.Error()
+		} else if result.Thread != nil && result.Thread.request != nil {
+			if result.Thread.request.ResponseStatus > 0 {
+				capturedStatus = result.Thread.request.ResponseStatus
+			}
+			capturedHeaders = result.Thread.request.ResponseHeaders
+		}
+
+		thread.state.eventChan <- &StateEvent{
+			Type:   EventResumeThread,
+			Thread: thread,
+			ResumeValues: []interface{}{CaptureResponse{
+				Status:  capturedStatus,
+				Body:    capturedBody,
+				Headers: capturedHeaders,
+			}},
+		}
+	}()
+
+	return C.lua_yield_wrapper(L, 0)
+}
+
 //export golapis_sleep
 func golapis_sleep(L *C.lua_State) C.int {
 	if C.lua_gettop(L) != 1 {
@@ -1039,10 +1138,10 @@ func golapis_sleep(L *C.lua_State) C.int {
 	if seconds == 0 {
 		// Yield back to the event loop without spawning a timer goroutine.
 		event := &StateEvent{
-			Type:       EventResumeThread,
-			Thread:     thread,
+			Type:         EventResumeThread,
+			Thread:       thread,
 			ResumeValues: nil, // sleep returns nothing
-			Response:   nil, // no response needed for internal events
+			Response:     nil, // no response needed for internal events
 		}
 		select {
 		case thread.state.eventChan <- event:
@@ -1056,10 +1155,10 @@ func golapis_sleep(L *C.lua_State) C.int {
 		go func() {
 			time.Sleep(time.Duration(seconds * float64(time.Second)))
 			thread.state.eventChan <- &StateEvent{
-				Type:       EventResumeThread,
-				Thread:     thread,
+				Type:         EventResumeThread,
+				Thread:       thread,
 				ResumeValues: nil, // sleep returns nothing
-				Response:   nil, // no response needed for internal events
+				Response:     nil, // no response needed for internal events
 			}
 		}()
 	}

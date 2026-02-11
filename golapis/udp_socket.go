@@ -370,8 +370,8 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 		conn, err := dialer.Dial("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 		if err != nil {
 			thread.state.eventChan <- &StateEvent{
-				Type:       EventResumeThread,
-				Thread:     thread,
+				Type:         EventResumeThread,
+				Thread:       thread,
 				ResumeValues: []interface{}{nil, err.Error()},
 			}
 			return
@@ -379,8 +379,8 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 
 		// State mutation happens on main thread via OnResume callback
 		thread.state.eventChan <- &StateEvent{
-			Type:       EventResumeThread,
-			Thread:     thread,
+			Type:         EventResumeThread,
+			Thread:       thread,
 			ResumeValues: []interface{}{1},
 			OnResume: func(event *StateEvent) {
 				if sock.closed || sock.gen != gen {
@@ -509,8 +509,8 @@ func golapis_udp_receive(L *C.lua_State) C.int {
 
 		if err != nil {
 			thread.state.eventChan <- &StateEvent{
-				Type:       EventResumeThread,
-				Thread:     thread,
+				Type:         EventResumeThread,
+				Thread:       thread,
 				ResumeValues: []interface{}{nil, normalizeNetError(err)},
 			}
 			return
@@ -518,8 +518,8 @@ func golapis_udp_receive(L *C.lua_State) C.int {
 
 		// Return data as string (binary-safe)
 		thread.state.eventChan <- &StateEvent{
-			Type:       EventResumeThread,
-			Thread:     thread,
+			Type:         EventResumeThread,
+			Thread:       thread,
 			ResumeValues: []interface{}{string(buf[:n])},
 		}
 	}()

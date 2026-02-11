@@ -130,9 +130,9 @@ type StateEvent struct {
 	Request      *GolapisRequest // Request context for this event (nil in CLI mode)
 
 	// For ResumeThread (async completion)
-	Thread     *LuaThread
+	Thread       *LuaThread
 	ResumeValues []interface{}
-	OnResume   func(event *StateEvent) // Called on main thread before resuming Lua (for state mutation)
+	OnResume     func(event *StateEvent) // Called on main thread before resuming Lua (for state mutation)
 
 	// For EventTimerFire
 	Timer     *PendingTimer // timer that fired
@@ -253,10 +253,10 @@ func (gls *GolapisLuaState) RunFile(filename string, args []string) error {
 	}
 
 	gls.eventChan <- &StateEvent{
-		Type:       EventRunFile,
-		Filename:   filename,
+		Type:         EventRunFile,
+		Filename:     filename,
 		ResumeValues: initArgs,
-		Response:   resp,
+		Response:     resp,
 	}
 	result := <-resp
 	return result.Error
@@ -280,9 +280,9 @@ func (gls *GolapisLuaState) RunString(code string) error {
 func (gls *GolapisLuaState) RunEntryPoint(args ...interface{}) error {
 	resp := make(chan *StateResponse, 1)
 	gls.eventChan <- &StateEvent{
-		Type:       EventRunEntryPoint,
+		Type:         EventRunEntryPoint,
 		ResumeValues: args,
-		Response:   resp,
+		Response:     resp,
 	}
 	result := <-resp
 	return result.Error
