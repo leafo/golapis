@@ -252,6 +252,7 @@ The `golapis` global table provides an ngx-compatible API. Functions use the sam
 | `golapis.req.get_headers([max], [raw])` | Get request headers as table |
 | `golapis.timer.at(delay, cb, ...)` | Schedule callback after delay |
 | `golapis.socket.udp()` | Create UDP cosocket (see below) |
+| `golapis.location.capture(uri)` | Internal subrequest (see below) |
 | `golapis.var.*` | Request variables (read-only, HTTP mode only) |
 | `golapis.header.*` | Response headers (write before first output) |
 | `golapis.status` | HTTP response status code (read/write, set before first output) |
@@ -327,6 +328,21 @@ TCP cosocket API compatible with `ngx.socket.tcp`.
 - `receiveany` returns `data` on success, `nil, error` on failure
 
 **Async behavior:** `connect`, `receive`, and `receiveany` are async and yield the current coroutine.
+
+### golapis.location.capture
+
+Implements `ngx.location.capture` for internal subrequests. Re-executes the
+loaded entrypoint with a synthetic request for the given URI and returns
+`{status, body, header}`. The calling coroutine yields until the subrequest
+completes.
+
+```lua
+local res = golapis.location.capture("/path?args")
+-- res.status, res.body, res.header
+```
+
+The second `opts` table argument (for setting method, body, args, etc.) is not
+yet supported.
 
 ## Extensions
 
