@@ -2009,8 +2009,6 @@ func golapis_timer_at(L *C.lua_State) C.int {
 // Groups multiple values for the same key into arrays.
 // Args with empty keys are always skipped.
 func pushQueryArgsToLuaTable(L *C.lua_State, args []queryArg) {
-	C.lua_newtable_wrapper(L)
-
 	argBuckets := make(map[string][]queryArg)
 	for _, arg := range args {
 		if arg.key == "" {
@@ -2019,32 +2017,38 @@ func pushQueryArgsToLuaTable(L *C.lua_State, args []queryArg) {
 		argBuckets[arg.key] = append(argBuckets[arg.key], arg)
 	}
 
+	b := AcquireBatch()
+	defer ReleaseBatch(b)
+
+	b.TableSized(0, len(argBuckets))
+
 	for key, keyArgs := range argBuckets {
 		if len(keyArgs) == 1 {
-			// Single value
-			pushGoString(L, key)
+			// Single value: table[key] = val or table[key] = true
+			b.String(key)
 			if keyArgs[0].isBoolean {
-				C.lua_pushboolean(L, 1) // true
+				b.Bool(true)
 			} else {
-				pushGoString(L, keyArgs[0].value)
+				b.String(keyArgs[0].value)
 			}
-			C.lua_settable(L, -3)
+			b.Set()
 		} else {
-			// Multiple values: {key = {val1, val2, ...}}
-			pushGoString(L, key)
-			C.lua_newtable_wrapper(L)
+			// Multiple values: table[key] = {val1, val2, ...}
+			b.String(key)
+			b.TableSized(len(keyArgs), 0)
 			for i, arg := range keyArgs {
-				C.lua_pushinteger(L, C.lua_Integer(i+1))
 				if arg.isBoolean {
-					C.lua_pushboolean(L, 1) // true
+					b.Bool(true)
 				} else {
-					pushGoString(L, arg.value)
+					b.String(arg.value)
 				}
-				C.lua_settable(L, -3)
+				b.SetIndex(i + 1)
 			}
-			C.lua_settable(L, -3)
+			b.Set()
 		}
 	}
+
+	b.Push(L)
 }
 
 //export golapis_req_get_uri_args

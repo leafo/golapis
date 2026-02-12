@@ -27,30 +27,32 @@ type CaptureResponse struct {
 }
 
 // PushToLua pushes the capture response as a Lua table onto L's stack.
+// Uses batched CGO to minimize C boundary crossings.
 func (cr CaptureResponse) PushToLua(L *C.lua_State) {
-	C.lua_newtable_wrapper(L)
+	b := AcquireBatch()
+	defer ReleaseBatch(b)
 
-	C.lua_pushinteger(L, C.lua_Integer(cr.Status))
-	cstatus := C.CString("status")
-	C.lua_setfield(L, -2, cstatus)
-	C.free(unsafe.Pointer(cstatus))
-
-	pushGoString(L, cr.Body)
-	cbody := C.CString("body")
-	C.lua_setfield(L, -2, cbody)
-	C.free(unsafe.Pointer(cbody))
-
-	C.lua_newtable_wrapper(L)
-	for key, values := range cr.Headers {
+	// Count headers with values for size hint
+	nHeaders := 0
+	for _, values := range cr.Headers {
 		if len(values) > 0 {
-			pushGoString(L, key)
-			pushGoString(L, values[0])
-			C.lua_settable(L, -3)
+			nHeaders++
 		}
 	}
-	cheader := C.CString("header")
-	C.lua_setfield(L, -2, cheader)
-	C.free(unsafe.Pointer(cheader))
+
+	b.Table()
+	b.Int(cr.Status).SetFieldInline("status")
+	b.String(cr.Body).SetFieldInline("body")
+
+	b.TableSized(0, nHeaders)
+	for key, values := range cr.Headers {
+		if len(values) > 0 {
+			b.StringEntry(key, values[0])
+		}
+	}
+	b.SetFieldInline("header")
+
+	b.Push(L)
 }
 
 // Static C strings - allocated once at package init, never freed

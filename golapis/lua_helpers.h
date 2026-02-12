@@ -5,6 +5,7 @@
 #include "../luajit/src/lauxlib.h"
 #include "../luajit/src/lualib.h"
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 static void lua_newtable_wrapper(lua_State *L) {
@@ -134,6 +135,147 @@ static void lua_push_traceback(lua_State *L, lua_State *co) {
         lua_pushstring(L, msg ? msg : "");
     }
     lua_remove(L, -2);          // remove debug table, keep traceback
+}
+
+// Batch push bytecode interpreter
+// Executes a sequence of encoded Lua stack operations from a byte buffer.
+// STR/SETF opcodes embed raw pointers to Go string data directly in the buffer.
+// STRI/SETFI opcodes embed string bytes inline in the buffer.
+// Returns 0 on success, -1 on error.
+#define BATCH_OP_NIL    0x01
+#define BATCH_OP_TRUE   0x02
+#define BATCH_OP_FALSE  0x03
+#define BATCH_OP_INT    0x04
+#define BATCH_OP_NUM    0x05
+#define BATCH_OP_STR    0x06
+#define BATCH_OP_STRI   0x07
+#define BATCH_OP_TABLE  0x08
+#define BATCH_OP_TABLEA 0x09
+#define BATCH_OP_SET    0x0A
+#define BATCH_OP_SETF   0x0B
+#define BATCH_OP_SETFI  0x0C
+#define BATCH_OP_SETI   0x0D
+#define BATCH_OP_POP    0x0E
+
+static inline uint32_t read_u32(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static inline uint64_t read_u64(const unsigned char *p) {
+    return (uint64_t)p[0] | ((uint64_t)p[1] << 8) |
+           ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
+           ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) |
+           ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
+}
+
+static inline int64_t read_i64(const unsigned char *p) {
+    return (int64_t)read_u64(p);
+}
+
+static inline double read_f64(const unsigned char *p) {
+    double d;
+    memcpy(&d, p, 8);
+    return d;
+}
+
+static int lua_batch_push(lua_State *L,
+                          const unsigned char *instr, size_t instr_len) {
+    size_t pos = 0;
+    while (pos < instr_len) {
+        unsigned char op = instr[pos++];
+        switch (op) {
+        case BATCH_OP_NIL:
+            lua_pushnil(L);
+            break;
+        case BATCH_OP_TRUE:
+            lua_pushboolean(L, 1);
+            break;
+        case BATCH_OP_FALSE:
+            lua_pushboolean(L, 0);
+            break;
+        case BATCH_OP_INT:
+            if (pos + 8 > instr_len) return -1;
+            lua_pushinteger(L, (lua_Integer)read_i64(instr + pos));
+            pos += 8;
+            break;
+        case BATCH_OP_NUM:
+            if (pos + 8 > instr_len) return -1;
+            lua_pushnumber(L, (lua_Number)read_f64(instr + pos));
+            pos += 8;
+            break;
+        case BATCH_OP_STR: {
+            // Embedded pointer: u64 ptr + u32 len
+            if (pos + 12 > instr_len) return -1;
+            const char *ptr = (const char *)(uintptr_t)read_u64(instr + pos);
+            uint32_t slen = read_u32(instr + pos + 8);
+            pos += 12;
+            lua_pushlstring(L, ptr, slen);
+            break;
+        }
+        case BATCH_OP_STRI: {
+            if (pos + 4 > instr_len) return -1;
+            uint32_t slen = read_u32(instr + pos);
+            pos += 4;
+            if (pos + slen > instr_len) return -1;
+            lua_pushlstring(L, (const char *)(instr + pos), slen);
+            pos += slen;
+            break;
+        }
+        case BATCH_OP_TABLE:
+            lua_newtable(L);
+            break;
+        case BATCH_OP_TABLEA: {
+            if (pos + 8 > instr_len) return -1;
+            uint32_t narr = read_u32(instr + pos);
+            uint32_t nrec = read_u32(instr + pos + 4);
+            pos += 8;
+            lua_createtable(L, (int)narr, (int)nrec);
+            break;
+        }
+        case BATCH_OP_SET:
+            lua_settable(L, -3);
+            break;
+        case BATCH_OP_SETF: {
+            // Embedded pointer: u64 ptr + u32 len
+            if (pos + 12 > instr_len) return -1;
+            const char *ptr = (const char *)(uintptr_t)read_u64(instr + pos);
+            uint32_t slen = read_u32(instr + pos + 8);
+            pos += 12;
+            lua_pushlstring(L, ptr, slen);
+            lua_insert(L, -2);
+            lua_settable(L, -3);
+            break;
+        }
+        case BATCH_OP_SETFI: {
+            if (pos + 4 > instr_len) return -1;
+            uint32_t slen = read_u32(instr + pos);
+            pos += 4;
+            if (pos + slen > instr_len) return -1;
+            lua_pushlstring(L, (const char *)(instr + pos), slen);
+            pos += slen;
+            lua_insert(L, -2);
+            lua_settable(L, -3);
+            break;
+        }
+        case BATCH_OP_SETI: {
+            if (pos + 4 > instr_len) return -1;
+            uint32_t idx = read_u32(instr + pos);
+            pos += 4;
+            lua_rawseti(L, -2, (int)idx);
+            break;
+        }
+        case BATCH_OP_POP: {
+            if (pos + 1 > instr_len) return -1;
+            unsigned char count = instr[pos++];
+            lua_pop(L, (int)count);
+            break;
+        }
+        default:
+            return -1; // unknown opcode
+        }
+    }
+    return 0;
 }
 
 // Wrapper for lua_gc (memory management and garbage collection)
