@@ -1,7 +1,10 @@
 package golapis
 
 import (
+	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -370,5 +373,58 @@ func TestLocationCaptureErrorNonHTTPContext(t *testing.T) {
 	}
 	if !strings.Contains(output, "OK\n") {
 		t.Errorf("test failed: %q", output)
+	}
+}
+
+func TestLocationCaptureFileServer(t *testing.T) {
+	// Create a temp directory with a test file
+	tmpDir := t.TempDir()
+	testContent := "hello from static file"
+	if err := os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte(testContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	code := `
+		local res = golapis.location.capture("/static/test.txt")
+		golapis.say(res.status)
+		golapis.say(res.body)
+	`
+
+	gls := NewGolapisLuaState()
+	if gls == nil {
+		t.Fatal("Failed to create Lua state")
+	}
+	defer gls.Close()
+
+	if err := gls.LoadEntryPoint(CodeEntryPoint{Code: code}); err != nil {
+		t.Fatal(err)
+	}
+
+	gls.Start()
+	defer gls.Stop()
+
+	// Build a mux with a file-server handler and the Lua handler
+	mux := http.NewServeMux()
+	fileHandler := http.StripPrefix("/static/", http.FileServer(http.Dir(tmpDir)))
+	mux.Handle("/static/", fileHandler)
+
+	config := DefaultHTTPServerConfig()
+	luaHandler := gls.HTTPHandler(config)
+	mux.Handle("/", luaHandler)
+
+	gls.httpMux = mux
+
+	// Dispatch the outer request through the mux
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	mux.ServeHTTP(w, r)
+	gls.Wait()
+
+	body := w.Body.String()
+	if !strings.Contains(body, "200\n") {
+		t.Errorf("expected 200 status, got: %q", body)
+	}
+	if !strings.Contains(body, testContent) {
+		t.Errorf("expected file content %q in body, got: %q", testContent, body)
 	}
 }

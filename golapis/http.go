@@ -92,6 +92,9 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 	// Setup graceful shutdown
 	setupGracefulShutdown(lua)
 
+	// Create custom mux so location.capture can route through it
+	mux := http.NewServeMux()
+
 	// Register static file servers first (more specific routes take precedence)
 	for _, fs := range config.FileServers {
 		prefix := fs.URLPrefix
@@ -104,7 +107,7 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 		localPath := fs.LocalPath // capture for closure
 		fileHandler := http.StripPrefix(prefix, http.FileServer(http.Dir(localPath)))
 		// Wrap with logging
-		http.Handle(prefix, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle(prefix, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			startTime := time.Now()
 			fileHandler.ServeHTTP(w, r)
 			logHTTPRequest(r, startTime, http.StatusOK, 0)
@@ -114,14 +117,17 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 
 	// Create handler with logging wrapper
 	handler := lua.HTTPHandler(config)
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 		handler.ServeHTTP(w, r)
 		logHTTPRequest(r, startTime, http.StatusOK, 0)
 	})
 
+	// Store mux on state so location.capture can route through it
+	lua.httpMux = mux
+
 	fmt.Printf("Listening on http://localhost:%s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
 
 // setupGracefulShutdown sets up signal handling for graceful shutdown

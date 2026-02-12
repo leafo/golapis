@@ -53,6 +53,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -85,6 +86,8 @@ type GolapisLuaState struct {
 	// Timer tracking
 	pendingTimers map[*PendingTimer]struct{} // set of pending timers
 	timerMu       sync.Mutex                 // protects pendingTimers
+
+	httpMux *http.ServeMux // HTTP mux for internal routing (used by location.capture)
 }
 
 // PendingTimer represents a scheduled timer waiting to fire

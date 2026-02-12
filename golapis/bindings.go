@@ -743,6 +743,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -1064,45 +1065,64 @@ func golapis_location_capture(L *C.lua_State) C.int {
 
 	req := NewGolapisRequest(httpReq)
 
-	// Create output buffer to capture subrequest response
-	var buf bytes.Buffer
+	if thread.state.httpMux != nil {
+		// Route through the HTTP mux so file-server and other mux-registered
+		// handlers are visible to subrequests.
+		go func() {
+			recorder := httptest.NewRecorder()
+			thread.state.httpMux.ServeHTTP(recorder, httpReq)
 
-	go func() {
-		resp := make(chan *StateResponse, 1)
-		thread.state.eventChan <- &StateEvent{
-			Type:         EventRunEntryPoint,
-			OutputWriter: &buf,
-			Request:      req,
-			Response:     resp,
-		}
-
-		result := <-resp
-
-		// Determine status and body from subrequest result
-		capturedStatus := 200
-		capturedBody := buf.String()
-		var capturedHeaders http.Header
-
-		if result.Error != nil {
-			capturedStatus = 500
-			capturedBody = result.Error.Error()
-		} else if result.Thread != nil && result.Thread.request != nil {
-			if result.Thread.request.ResponseStatus > 0 {
-				capturedStatus = result.Thread.request.ResponseStatus
+			thread.state.eventChan <- &StateEvent{
+				Type:   EventResumeThread,
+				Thread: thread,
+				ResumeValues: []interface{}{CaptureResponse{
+					Status:  recorder.Code,
+					Body:    recorder.Body.String(),
+					Headers: recorder.Header(),
+				}},
 			}
-			capturedHeaders = result.Thread.request.ResponseHeaders
-		}
+		}()
+	} else {
+		// Fallback: no mux available (CLI mode, tests without mux).
+		// Dispatch through the Lua event loop directly.
+		var buf bytes.Buffer
 
-		thread.state.eventChan <- &StateEvent{
-			Type:   EventResumeThread,
-			Thread: thread,
-			ResumeValues: []interface{}{CaptureResponse{
-				Status:  capturedStatus,
-				Body:    capturedBody,
-				Headers: capturedHeaders,
-			}},
-		}
-	}()
+		go func() {
+			resp := make(chan *StateResponse, 1)
+			thread.state.eventChan <- &StateEvent{
+				Type:         EventRunEntryPoint,
+				OutputWriter: &buf,
+				Request:      req,
+				Response:     resp,
+			}
+
+			result := <-resp
+
+			capturedStatus := 200
+			capturedBody := buf.String()
+			var capturedHeaders http.Header
+
+			if result.Error != nil {
+				capturedStatus = 500
+				capturedBody = result.Error.Error()
+			} else if result.Thread != nil && result.Thread.request != nil {
+				if result.Thread.request.ResponseStatus > 0 {
+					capturedStatus = result.Thread.request.ResponseStatus
+				}
+				capturedHeaders = result.Thread.request.ResponseHeaders
+			}
+
+			thread.state.eventChan <- &StateEvent{
+				Type:   EventResumeThread,
+				Thread: thread,
+				ResumeValues: []interface{}{CaptureResponse{
+					Status:  capturedStatus,
+					Body:    capturedBody,
+					Headers: capturedHeaders,
+				}},
+			}
+		}()
+	}
 
 	return C.lua_yield_wrapper(L, 0)
 }
