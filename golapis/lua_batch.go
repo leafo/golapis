@@ -19,42 +19,6 @@ const luaBatchPtrSize = unsafe.Sizeof(uintptr(0))
 var _ [8 - luaBatchPtrSize]byte
 var _ [luaBatchPtrSize - 8]byte
 
-// Type alias so test files can reference the Lua state type without importing C.
-type cLuaState = *C.lua_State
-
-// Thin wrappers for individual CGO calls, used by benchmarks to compare
-// old (per-call) approach against the new batched approach.
-
-func luaPop(L *C.lua_State, n int) {
-	C.lua_pop_wrapper(L, C.int(n))
-}
-
-func luaNewTable(L *C.lua_State) {
-	C.lua_newtable_wrapper(L)
-}
-
-func luaPushInteger(L *C.lua_State, v int) {
-	C.lua_pushinteger(L, C.lua_Integer(v))
-}
-
-func luaPushBoolean(L *C.lua_State, v bool) {
-	if v {
-		C.lua_pushboolean(L, 1)
-	} else {
-		C.lua_pushboolean(L, 0)
-	}
-}
-
-func luaSetTable(L *C.lua_State) {
-	C.lua_settable(L, -3)
-}
-
-func luaSetFieldCString(L *C.lua_State, name string) {
-	cname := C.CString(name)
-	C.lua_setfield(L, -2, cname)
-	C.free(unsafe.Pointer(cname))
-}
-
 // Opcode constants matching lua_helpers.h
 const (
 	batchOpNil    = 0x01
@@ -293,4 +257,11 @@ func (b *LuaBatch) Push(L *C.lua_State) {
 	if ret != 0 {
 		panic("golapis: lua_batch_push failed")
 	}
+}
+
+// PushUnsafe executes all encoded instructions on a Lua state provided as an
+// unsafe.Pointer. This allows external packages (e.g. benchmarks with their own
+// CGO lua_State) to use LuaBatch without depending on golapis's internal C types.
+func (b *LuaBatch) PushUnsafe(L unsafe.Pointer) {
+	b.Push((*C.lua_State)(L))
 }
