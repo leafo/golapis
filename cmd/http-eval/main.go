@@ -44,7 +44,8 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] [script.lua]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "Runs a Lua script through the HTTP handler and makes a single request to it.")
-		fmt.Fprintln(os.Stderr, "Useful for testing HTTP-specific functionality without running a persistent server.\n")
+		fmt.Fprintln(os.Stderr, "Useful for testing HTTP-specific functionality without running a persistent server.")
+		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Options:")
 		flag.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "\nExamples:")

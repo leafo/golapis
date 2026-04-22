@@ -67,7 +67,8 @@ func main() {
 		gls.Wait() // Wait for all to complete - state is now idle
 		gls.ForceLuaGC()
 		runtime.GC()
-		fmt.Println("Warmup complete.\n")
+		fmt.Println("Warmup complete.")
+		fmt.Println()
 	}
 
 	// Baseline sample (after warmup, state is idle)

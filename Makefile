@@ -1,6 +1,7 @@
-.PHONY: build build-debug clean luajit test install install-debug
+.PHONY: build build-debug clean luajit test race-test install install-debug
 
 BINARY_NAME=golapis
+TEST_TIMEOUT ?= 60s
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -34,7 +35,11 @@ clean:
 
 test: luajit
 	@echo "Running tests..."
-	CGO_ENABLED=1 go test ./golapis -v -timeout 5s
+	CGO_ENABLED=1 go test ./... -v -timeout $(TEST_TIMEOUT)
+
+race-test: luajit
+	@echo "Running race tests..."
+	CGO_ENABLED=1 go test -race ./golapis -v -timeout $(TEST_TIMEOUT)
 
 install: luajit
 	@echo "Installing $(BINARY_NAME)..."
