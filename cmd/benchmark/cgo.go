@@ -2,7 +2,8 @@ package main
 
 /*
 #cgo CFLAGS: -I../../luajit/src
-#cgo LDFLAGS: -L../../luajit/src -l:libluajit.a -lm -ldl -rdynamic
+#cgo linux LDFLAGS: -L../../luajit/src -l:libluajit.a -lm -ldl -rdynamic
+#cgo windows LDFLAGS: -L../../luajit/src -l:libluajit.a -lm
 
 #include "../../luajit/src/lua.h"
 #include "../../luajit/src/lauxlib.h"
