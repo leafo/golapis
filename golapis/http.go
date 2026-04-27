@@ -140,7 +140,6 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 	// Start the event loop (runs for lifetime of server)
 	lua.Start()
 	defer lua.Close()
-	defer lua.Stop()
 
 	// Create custom mux so location.capture can route through it
 	mux := http.NewServeMux()
@@ -182,14 +181,22 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+	gracefulShutdown := false
 	select {
 	case <-shutdownStarted:
+		gracefulShutdown = true
 		if err := <-shutdownDone; err != nil {
 			log.Printf("HTTP server shutdown error: %v", err)
 		}
 		requestWg.Wait()
 	default:
 	}
+	if gracefulShutdown {
+		// Shutdown has stopped accepting new HTTP work; let in-flight Lua work
+		// finish before stopping the event loop and closing the Lua state.
+		lua.Wait()
+	}
+	lua.Stop()
 }
 
 // setupGracefulShutdown sets up signal handling for graceful shutdown
