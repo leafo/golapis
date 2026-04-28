@@ -49,6 +49,7 @@ static void flush_stdout() {
 import "C"
 import (
 	"bytes"
+	"container/list"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -86,6 +87,11 @@ type GolapisLuaState struct {
 	// Timer tracking
 	pendingTimers map[*PendingTimer]struct{} // set of pending timers
 	timerMu       sync.Mutex                 // protects pendingTimers
+
+	// TCP connection pool registry (per-state, keyed by host:port or custom name)
+	tcpPoolsMu     sync.Mutex
+	tcpPools       map[string]*tcpPool
+	tcpPoolsClosed bool // set during drain; rejects new inserts
 
 	httpMux *http.ServeMux // HTTP mux for internal routing (used by location.capture)
 }
@@ -164,6 +170,7 @@ func NewGolapisLuaState() *GolapisLuaState {
 		outputWriter:  os.Stdout,
 		eventChan:     make(chan *StateEvent, 100), // buffered channel for events
 		pendingTimers: make(map[*PendingTimer]struct{}),
+		tcpPools:      make(map[string]*tcpPool),
 	}
 	gls.registerState()
 	gls.SetupGolapis()
@@ -172,6 +179,7 @@ func NewGolapisLuaState() *GolapisLuaState {
 
 // Close closes the Lua state and frees its resources
 func (gls *GolapisLuaState) Close() {
+	gls.drainTCPPools()
 	if gls.luaState != nil {
 		// Release the golapis table reference
 		if gls.golapisRef != 0 {
@@ -218,6 +226,9 @@ func (gls *GolapisLuaState) ForceLuaGC() {
 // Start launches the event loop goroutine
 func (gls *GolapisLuaState) Start() {
 	gls.stopping.Store(false)
+	gls.tcpPoolsMu.Lock()
+	gls.tcpPoolsClosed = false
+	gls.tcpPoolsMu.Unlock()
 	gls.running = true
 	go gls.eventLoop()
 }
@@ -230,6 +241,7 @@ func (gls *GolapisLuaState) Stop() {
 	// Hard stop: clean up timers without firing callbacks
 	gls.stopping.Store(true)
 	gls.CancelAllTimers()
+	gls.drainTCPPools()
 
 	resp := make(chan *StateResponse, 1)
 	gls.eventChan <- &StateEvent{
@@ -237,6 +249,37 @@ func (gls *GolapisLuaState) Stop() {
 		Response: resp,
 	}
 	<-resp
+}
+
+// drainTCPPools claims and closes every pooled TCP connection in this state.
+// Sets tcpPoolsClosed so any in-flight setkeepalive will reject. Watcher
+// goroutines that are still inside Read wake via SetReadDeadline, lose the
+// CAS to this drain, and exit silently. Watchers that already won the CAS
+// on their entry before drain runs are left alone to clean up their own
+// list element via removeFromList — using list.Init() here would leave them
+// holding stale Element pointers and corrupt the list length on their Remove.
+func (gls *GolapisLuaState) drainTCPPools() {
+	gls.tcpPoolsMu.Lock()
+	gls.tcpPoolsClosed = true
+	var toClose []*tcpPoolEntry
+	for _, p := range gls.tcpPools {
+		var next *list.Element
+		for elem := p.list.Front(); elem != nil; elem = next {
+			next = elem.Next()
+			e := elem.Value.(*tcpPoolEntry)
+			if atomic.CompareAndSwapInt32(&e.state, tcpEntryAvailable, tcpEntryClaimed) {
+				p.list.Remove(elem)
+				e.listElem = nil
+				toClose = append(toClose, e)
+			}
+		}
+	}
+	gls.tcpPoolsMu.Unlock()
+
+	// Close outside the lock — Close can block on TCP teardown.
+	for _, e := range toClose {
+		closePoolEntry(e)
+	}
 }
 
 // Wait blocks until all active threads have completed execution

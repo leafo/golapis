@@ -36,8 +36,13 @@ type TCPSocket struct {
 	readBuf    []byte
 	readBufPos int
 
-	// Connection pooling tracking (stub for now)
-	reusedTimes int // number of times retrieved from pool (always 0 for now)
+	// Connection pooling tracking
+	reusedTimes int    // number of times retrieved from pool
+	poolKey     string // pool key set at connect time; used by setkeepalive
+	poolSize    int    // optional opts.pool_size override (0 = use setkeepalive arg)
+	host        string // saved for default key construction
+	port        int    // 0 for unix sockets
+	unixPath    string // empty for TCP
 
 	// Busy state tracking (OpenResty-style)
 	connecting bool
@@ -278,12 +283,56 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 	}
 
 	arg1 := C.GoString(C.lua_tostring_wrapper(L, 2))
+	isUnix := strings.HasPrefix(arg1, "unix:")
+
+	// Parse opts table (3rd arg for unix, 4th for TCP).
+	optsIdx := C.int(0)
+	if isUnix {
+		if C.lua_gettop(L) >= 3 && C.lua_istable_wrapper(L, 3) != 0 {
+			optsIdx = 3
+		}
+	} else {
+		if C.lua_gettop(L) >= 4 && C.lua_istable_wrapper(L, 4) != 0 {
+			optsIdx = 4
+		}
+	}
+	var customPool string
+	customPoolSize := 0
+	if optsIdx != 0 {
+		customPool = getTableString(L, optsIdx, "pool")
+		customPoolSize = getTableIntDefault(L, optsIdx, "pool_size", 0)
+	}
 
 	// Unix domain socket: "unix:/path"
-	if strings.HasPrefix(arg1, "unix:") {
+	if isUnix {
 		path := arg1[5:]
 		timeout := sock.connectTimeout
 		gen := sock.gen
+
+		// Compute pool key and save socket metadata before any pool/dial work.
+		poolKey := customPool
+		if poolKey == "" {
+			poolKey = "unix:" + path
+		}
+		sock.poolKey = poolKey
+		sock.poolSize = customPoolSize
+		sock.host = ""
+		sock.port = 0
+		sock.unixPath = path
+
+		// Try pool first — synchronous fast path on hit.
+		if entry, ok := tryTakeFromPool(thread.state, poolKey); ok {
+			sock.conn = entry.conn
+			sock.connected = true
+			sock.isUnix = true
+			sock.reusedTimes = entry.reused + 1
+			entry.conn.SetReadDeadline(time.Time{})
+			if debugEnabled {
+				debugLog("tcp.connect: id=%d unix=%s reused=%d", sockID, path, sock.reusedTimes)
+			}
+			C.lua_pushinteger(L, 1)
+			return 1
+		}
 
 		if debugEnabled {
 			debugLog("tcp.connect: id=%d unix=%s timeout=%v", sockID, path, timeout)
@@ -333,6 +382,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 					sock.conn = conn
 					sock.connected = true
 					sock.isUnix = true
+					sock.reusedTimes = 0
 				},
 			}
 		}()
@@ -359,6 +409,31 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 	timeout := sock.connectTimeout
 	gen := sock.gen
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
+
+	// Compute pool key and save socket metadata.
+	poolKey := customPool
+	if poolKey == "" {
+		poolKey = host + ":" + strconv.Itoa(port)
+	}
+	sock.poolKey = poolKey
+	sock.poolSize = customPoolSize
+	sock.host = host
+	sock.port = port
+	sock.unixPath = ""
+
+	// Try pool first — synchronous fast path on hit.
+	if entry, ok := tryTakeFromPool(thread.state, poolKey); ok {
+		sock.conn = entry.conn
+		sock.connected = true
+		sock.isUnix = false
+		sock.reusedTimes = entry.reused + 1
+		entry.conn.SetReadDeadline(time.Time{})
+		if debugEnabled {
+			debugLog("tcp.connect: id=%d addr=%s reused=%d", sockID, addr, sock.reusedTimes)
+		}
+		C.lua_pushinteger(L, 1)
+		return 1
+	}
 
 	if debugEnabled {
 		debugLog("tcp.connect: id=%d addr=%s timeout=%v", sockID, addr, timeout)
@@ -406,6 +481,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 				}
 				sock.conn = conn
 				sock.connected = true
+				sock.reusedTimes = 0
 			},
 		}
 	}()
@@ -1031,7 +1107,7 @@ func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
 		return 2
 	}
 
-	if !sock.connected {
+	if !sock.connected || sock.conn == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "not connected")
 		return 2
@@ -1041,13 +1117,97 @@ func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
 		return 2
 	}
 
-	// Stub implementation: just close the connection
-	// Real implementation would put the connection into a pool
-	if sock.conn != nil {
-		sock.conn.Close()
+	// Reject if there's unread buffered data — the connection is in an
+	// indeterminate state and should not be returned to the pool.
+	if sock.readBufPos < len(sock.readBuf) {
+		C.lua_pushnil(L)
+		pushGoString(L, "unread data in buffer")
+		return 2
 	}
+
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "setkeepalive: could not find thread context")
+		return 2
+	}
+
+	// Parse args: setkeepalive([max_idle_timeout_ms], [pool_size])
+	maxIdleMs := 60000
+	poolSize := 30
+	if C.lua_gettop(L) >= 2 && C.lua_isnumber(L, 2) != 0 {
+		maxIdleMs = int(C.lua_tonumber(L, 2))
+	}
+	if C.lua_gettop(L) >= 3 && C.lua_isnumber(L, 3) != 0 {
+		poolSize = int(C.lua_tonumber(L, 3))
+	}
+	if sock.poolSize > 0 {
+		// connect-time opts.pool_size wins
+		poolSize = sock.poolSize
+	}
+	if poolSize < 1 {
+		C.lua_pushnil(L)
+		pushGoString(L, "bad pool_size")
+		return 2
+	}
+
+	state := thread.state
+	state.tcpPoolsMu.Lock()
+	if state.tcpPoolsClosed {
+		state.tcpPoolsMu.Unlock()
+		sock.conn.Close()
+		sock.conn = nil
+		sock.connected = false
+		sock.closed = true
+		sock.gen++
+		C.lua_pushnil(L)
+		pushGoString(L, "closed")
+		return 2
+	}
+	pool, ok := state.tcpPools[sock.poolKey]
+	if !ok {
+		pool = newTCPPool(sock.poolKey, poolSize)
+		state.tcpPools[sock.poolKey] = pool
+	} else if poolSize > pool.maxSize {
+		pool.maxSize = poolSize
+	}
+	// Best-effort eviction of one LRU entry if at capacity. If every entry
+	// is currently CAS-claimed (e.g. by a watcher that hasn't yet released
+	// itself from the list), we accept temporary over-capacity rather than
+	// spinning — the watcher will free space momentarily.
+	var evicted *tcpPoolEntry
+	if pool.list.Len() >= pool.maxSize {
+		evicted = pool.evictLRUUnlocked()
+	}
+	entry := &tcpPoolEntry{
+		conn:        sock.conn,
+		reused:      sock.reusedTimes,
+		pool:        pool,
+		state:       tcpEntryAvailable,
+		idleTimeout: time.Duration(maxIdleMs) * time.Millisecond,
+		owner:       state,
+		done:        make(chan struct{}),
+	}
+	entry.listElem = pool.list.PushFront(entry)
+	state.tcpPoolsMu.Unlock()
+
+	// Close evicted conn outside the lock so we don't hold it through a
+	// potentially blocking syscall.
+	if evicted != nil {
+		closePoolEntry(evicted)
+	}
+
+	go entry.watch()
+
+	if debugEnabled {
+		debugLog("tcp.setkeepalive: id=%d key=%s reused=%d idle_ms=%d pool_size=%d", sockID, sock.poolKey, sock.reusedTimes, maxIdleMs, poolSize)
+	}
+
+	// Detach connection from socket so the GC finalizer doesn't double-close.
+	// Mark the userdata closed — subsequent ops on it will return "closed".
 	sock.conn = nil
 	sock.connected = false
+	sock.closed = true
 	sock.readBuf = nil
 	sock.readBufPos = 0
 	sock.connecting = false
@@ -1055,21 +1215,26 @@ func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
 	sock.writing = false
 	sock.gen++
 
-	if debugEnabled {
-		debugLog("tcp.setkeepalive: id=%d", sockID)
-	}
 	C.lua_pushinteger(L, 1)
 	return 1
 }
 
 //export golapis_tcp_getreusedtimes
 func golapis_tcp_getreusedtimes(L *C.lua_State) C.int {
-	sock, _ := getTCPSocketFromUserdata(L, 1)
+	sock, sockID := getTCPSocketFromUserdata(L, 1)
 	if sock == nil {
-		C.lua_pushinteger(L, 0)
-		return 1
+		C.lua_pushnil(L)
+		pushGoString(L, "closed")
+		return 2
 	}
-
+	if !checkTCPSocketAffinity(L, sock, sockID) {
+		return 2
+	}
+	if sock.closed {
+		C.lua_pushnil(L)
+		pushGoString(L, "closed")
+		return 2
+	}
 	C.lua_pushinteger(L, C.lua_Integer(sock.reusedTimes))
 	return 1
 }
