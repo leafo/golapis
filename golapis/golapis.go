@@ -59,6 +59,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -86,7 +87,9 @@ type GolapisLuaState struct {
 
 	// Timer tracking
 	pendingTimers map[*PendingTimer]struct{} // set of pending timers
+	runningTimers int                        // timer callbacks currently running
 	timerMu       sync.Mutex                 // protects pendingTimers
+	timerSched    *timerScheduler            // heap-backed timer scheduler
 
 	// TCP connection pool registry (per-state, keyed by host:port or custom name)
 	tcpPoolsMu     sync.Mutex
@@ -101,19 +104,17 @@ type GolapisLuaState struct {
 // arguments can be passed directly without having to serialize them through
 // go.
 type PendingTimer struct {
-	State      *GolapisLuaState // parent state
-	CoRef      C.int            // registry ref to coroutine (prevents GC)
-	Co         *C.lua_State     // the coroutine pointer
-	cancelChan chan struct{}    // closed to signal premature cancellation
-	cancelOnce sync.Once        // ensures cancel channel is only closed once
+	State    *GolapisLuaState // parent state
+	CoRef    C.int            // registry ref to coroutine (prevents GC)
+	Co       *C.lua_State     // the coroutine pointer
+	deadline time.Time        // scheduler deadline
+	index    int              // heap index, -1 when not queued
+	fired    atomic.Bool      // true once a callback event has been claimed
 }
 
-// Cancel closes the timer's cancel channel, signaling premature cancellation.
-// Safe to call multiple times.
-func (t *PendingTimer) Cancel() {
-	t.cancelOnce.Do(func() {
-		close(t.cancelChan)
-	})
+// claim marks the timer as fired/cancelled so only one event can be queued.
+func (t *PendingTimer) claim() bool {
+	return t.fired.CompareAndSwap(false, true)
 }
 
 // StateEventType represents the type of event sent to the state's event loop
@@ -179,6 +180,12 @@ func NewGolapisLuaState() *GolapisLuaState {
 
 // Close closes the Lua state and frees its resources
 func (gls *GolapisLuaState) Close() {
+	if gls.running {
+		gls.Stop()
+	} else if gls.timerSched != nil {
+		gls.timerSched.stopAndWait()
+		gls.timerSched = nil
+	}
 	gls.drainTCPPools()
 	if gls.luaState != nil {
 		// Release the golapis table reference
@@ -229,6 +236,8 @@ func (gls *GolapisLuaState) Start() {
 	gls.tcpPoolsMu.Lock()
 	gls.tcpPoolsClosed = false
 	gls.tcpPoolsMu.Unlock()
+	gls.timerSched = newTimerScheduler(gls)
+	gls.timerSched.start()
 	gls.running = true
 	go gls.eventLoop()
 }
@@ -240,6 +249,10 @@ func (gls *GolapisLuaState) Stop() {
 	}
 	// Hard stop: clean up timers without firing callbacks
 	gls.stopping.Store(true)
+	if gls.timerSched != nil {
+		gls.timerSched.stopAndWait()
+		gls.timerSched = nil
+	}
 	gls.CancelAllTimers()
 	gls.drainTCPPools()
 
@@ -516,6 +529,11 @@ func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse
 func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 	timer := event.Timer
 
+	if gls.stopping.Load() {
+		gls.discardTimer(timer)
+		return
+	}
+
 	// Remove timer from pending set
 	gls.timerMu.Lock()
 	delete(gls.pendingTimers, timer)
@@ -545,12 +563,17 @@ func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 	// Create LuaThread wrapper for the coroutine
 	// Note: threadWg was already incremented when timer was scheduled in golapis_timer_at
 	thread := &LuaThread{
-		state:  gls,
-		co:     co,
-		status: ThreadCreated,
-		coRef:  timer.CoRef,
-		ctxRef: ctxRef,
+		state:    gls,
+		co:       co,
+		status:   ThreadCreated,
+		coRef:    timer.CoRef,
+		ctxRef:   ctxRef,
+		timerRun: true,
 	}
+
+	gls.timerMu.Lock()
+	gls.runningTimers++
+	gls.timerMu.Unlock()
 
 	thread.coCtxByState = make(map[*C.lua_State]*coCtx)
 	entry := &coCtx{
@@ -596,11 +619,47 @@ func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 // unless the state is stopping.
 func (gls *GolapisLuaState) CancelAllTimers() {
 	gls.timerMu.Lock()
-	defer gls.timerMu.Unlock()
-
+	timers := make([]*PendingTimer, 0, len(gls.pendingTimers))
 	for timer := range gls.pendingTimers {
-		timer.Cancel()
+		timers = append(timers, timer)
 	}
+	gls.timerMu.Unlock()
+
+	for _, timer := range timers {
+		if gls.timerSched != nil {
+			gls.timerSched.remove(timer)
+		}
+		if timer.claim() && !gls.stopping.Load() {
+			gls.enqueueTimerFire(timer, true)
+		}
+	}
+}
+
+func (gls *GolapisLuaState) enqueueTimerFire(timer *PendingTimer, premature bool) {
+	event := &StateEvent{
+		Type:      EventTimerFire,
+		Timer:     timer,
+		Premature: premature,
+	}
+	select {
+	case gls.eventChan <- event:
+	default:
+		go func() {
+			gls.eventChan <- event
+		}()
+	}
+}
+
+func (gls *GolapisLuaState) discardTimer(timer *PendingTimer) {
+	gls.timerMu.Lock()
+	if _, ok := gls.pendingTimers[timer]; ok {
+		delete(gls.pendingTimers, timer)
+		gls.timerMu.Unlock()
+		C.luaL_unref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX, timer.CoRef)
+		gls.threadWg.Done()
+		return
+	}
+	gls.timerMu.Unlock()
 }
 
 // loadString loads a Lua code string onto the stack, but doesn't execute it (internal)

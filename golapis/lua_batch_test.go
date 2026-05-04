@@ -241,4 +241,3 @@ func TestBatchPushPanicsOnInterpreterError(t *testing.T) {
 
 	b.Push(gls.luaState)
 }
-

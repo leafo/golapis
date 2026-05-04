@@ -16,6 +16,8 @@ extern int golapis_req_read_body(lua_State *L);
 extern int golapis_req_get_body_data(lua_State *L);
 extern int golapis_req_get_post_args(lua_State *L);
 extern int golapis_timer_at(lua_State *L);
+extern int golapis_timer_pending_count(lua_State *L);
+extern int golapis_timer_running_count(lua_State *L);
 extern int golapis_debug_cancel_timers(lua_State *L);
 extern int golapis_debug_pending_timer_count(lua_State *L);
 extern int golapis_var_index(lua_State *L);
@@ -141,6 +143,14 @@ static void init_headers_metatable(lua_State *L) {
 
 static int c_timer_at_wrapper(lua_State *L) {
     return golapis_timer_at(L);
+}
+
+static int c_timer_pending_count_wrapper(lua_State *L) {
+    return golapis_timer_pending_count(L);
+}
+
+static int c_timer_running_count_wrapper(lua_State *L) {
+    return golapis_timer_running_count(L);
 }
 
 static int c_debug_cancel_timers_wrapper(lua_State *L) {
@@ -663,6 +673,10 @@ static int setup_golapis_global(lua_State *L) {
     lua_newtable(L);
     lua_pushcfunction(L, c_timer_at_wrapper);
     lua_setfield(L, -2, "at");
+    lua_pushcfunction(L, c_timer_pending_count_wrapper);
+    lua_setfield(L, -2, "pending_count");
+    lua_pushcfunction(L, c_timer_running_count_wrapper);
+    lua_setfield(L, -2, "running_count");
     lua_setfield(L, -2, "timer");       // Add timer table to `golapis`
 
     // Create debug table
@@ -1926,12 +1940,23 @@ func golapis_timer_at(L *C.lua_State) C.int {
 		pushGoString(L, "delay must be >= 0")
 		return 2
 	}
+	maxTimerSeconds := float64(time.Duration(1<<63-1)) / float64(time.Second)
+	if math.IsNaN(delay) || math.IsInf(delay, 0) || delay > maxTimerSeconds {
+		C.lua_pushnil(L)
+		pushGoString(L, "delay is not a valid duration")
+		return 2
+	}
 
 	// Get the GolapisLuaState (we need the main Lua state, not the coroutine)
 	gls := getLuaStateFromRegistry(L)
 	if gls == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "timer.at: could not find golapis state")
+		return 2
+	}
+	if delay > 0 && gls.timerSched == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "timer scheduler is not running")
 		return 2
 	}
 
@@ -1960,10 +1985,10 @@ func golapis_timer_at(L *C.lua_State) C.int {
 
 	// Create PendingTimer
 	timer := &PendingTimer{
-		State:      gls,
-		CoRef:      coRef,
-		Co:         co,
-		cancelChan: make(chan struct{}),
+		State: gls,
+		CoRef: coRef,
+		Co:    co,
+		index: -1,
 	}
 
 	// Add to pending timers set
@@ -1976,44 +2001,11 @@ func golapis_timer_at(L *C.lua_State) C.int {
 
 	if delay == 0 {
 		// Optimization: skip goroutine for immediate execution
-		event := &StateEvent{
-			Type:      EventTimerFire,
-			Timer:     timer,
-			Premature: false,
-		}
-		// Avoid blocking the event loop; fall back to a goroutine only if the buffer is full.
-		select {
-		case gls.eventChan <- event:
-		default:
-			go func() {
-				gls.eventChan <- event
-			}()
+		if timer.claim() {
+			gls.enqueueTimerFire(timer, false)
 		}
 	} else {
-		// Launch timer goroutine
-		go func() {
-			select {
-			case <-time.After(time.Duration(delay * float64(time.Second))):
-				// Normal timer fire
-				// Note: if the state stops after this fires, the send can block forever.
-				// Acceptable for process shutdown; revisit if states are restarted long-lived.
-				gls.eventChan <- &StateEvent{
-					Type:      EventTimerFire,
-					Timer:     timer,
-					Premature: false,
-				}
-			case <-timer.cancelChan:
-				// Cancelled - check if we should fire callback or exit silently
-				if !timer.State.stopping.Load() {
-					gls.eventChan <- &StateEvent{
-						Type:      EventTimerFire,
-						Timer:     timer,
-						Premature: true,
-					}
-				}
-				// else: hard stop, exit silently without firing callback
-			}
-		}()
+		gls.timerSched.add(timer, time.Duration(delay*float64(time.Second)))
 	}
 
 	if debugEnabled {
@@ -2022,6 +2014,34 @@ func golapis_timer_at(L *C.lua_State) C.int {
 
 	// Return true (success)
 	C.lua_pushboolean(L, 1)
+	return 1
+}
+
+//export golapis_timer_pending_count
+func golapis_timer_pending_count(L *C.lua_State) C.int {
+	gls := getLuaStateFromRegistry(L)
+	if gls == nil {
+		C.lua_pushinteger(L, 0)
+		return 1
+	}
+	gls.timerMu.Lock()
+	count := len(gls.pendingTimers)
+	gls.timerMu.Unlock()
+	C.lua_pushinteger(L, C.lua_Integer(count))
+	return 1
+}
+
+//export golapis_timer_running_count
+func golapis_timer_running_count(L *C.lua_State) C.int {
+	gls := getLuaStateFromRegistry(L)
+	if gls == nil {
+		C.lua_pushinteger(L, 0)
+		return 1
+	}
+	gls.timerMu.Lock()
+	count := gls.runningTimers
+	gls.timerMu.Unlock()
+	C.lua_pushinteger(L, C.lua_Integer(count))
 	return 1
 }
 

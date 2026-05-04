@@ -124,3 +124,56 @@ func TestTimerExampleShort(t *testing.T) {
 		t.Errorf("output mismatch\ngot:  %q\nwant: %q", output, expected)
 	}
 }
+
+func TestTimerCountAPIs(t *testing.T) {
+	code := `
+		local started = false
+		local done = false
+
+		golapis.say("pending initial:" .. golapis.timer.pending_count())
+		golapis.say("running initial:" .. golapis.timer.running_count())
+
+		golapis.timer.at(0.01, function(premature)
+			if premature then return end
+			started = true
+			golapis.say("running in callback:" .. golapis.timer.running_count())
+			golapis.sleep(0.03)
+			golapis.say("running after yield:" .. golapis.timer.running_count())
+			done = true
+		end)
+
+		golapis.say("pending after schedule:" .. golapis.timer.pending_count())
+
+		while not started do
+			golapis.sleep(0.005)
+		end
+
+		golapis.say("pending after start:" .. golapis.timer.pending_count())
+		golapis.say("running while yielded:" .. golapis.timer.running_count())
+
+		while not done do
+			golapis.sleep(0.005)
+		end
+
+		golapis.sleep(0.005)
+		golapis.say("running after done:" .. golapis.timer.running_count())
+	`
+
+	expected := "" +
+		"pending initial:0\n" +
+		"running initial:0\n" +
+		"pending after schedule:1\n" +
+		"running in callback:1\n" +
+		"pending after start:0\n" +
+		"running while yielded:1\n" +
+		"running after yield:1\n" +
+		"running after done:0\n"
+
+	output, err := runLuaAndCapture(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if output != expected {
+		t.Errorf("output mismatch\ngot:  %q\nwant: %q", output, expected)
+	}
+}

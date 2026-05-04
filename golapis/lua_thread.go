@@ -108,6 +108,7 @@ type LuaThread struct {
 	responseChan chan *StateResponse // channel to send final response when thread completes
 	outputWriter io.Writer           // per-request output destination (e.g., http.ResponseWriter)
 	request      *GolapisRequest     // Request context (nil in CLI mode)
+	timerRun     bool                // true for timer callback threads counted as running timers
 
 	curCo        *coCtx
 	entryCo      *coCtx
@@ -482,6 +483,14 @@ func (t *LuaThread) close() {
 		if t.ctxRef != 0 {
 			C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, t.ctxRef)
 			t.ctxRef = 0
+		}
+		if t.timerRun {
+			t.state.timerMu.Lock()
+			if t.state.runningTimers > 0 {
+				t.state.runningTimers--
+			}
+			t.state.timerMu.Unlock()
+			t.timerRun = false
 		}
 		t.co = nil
 		t.state.threadWg.Done()
