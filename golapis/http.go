@@ -108,6 +108,7 @@ func (gls *GolapisLuaState) HTTPHandler(config *HTTPServerConfig) http.Handler {
 
 		result := <-resp
 		if result.Error != nil {
+			log.Printf("500 %s %s: %v", r.Method, r.URL.RequestURI(), result.Error)
 			http.Error(w, result.Error.Error(), http.StatusInternalServerError)
 			return
 		}
