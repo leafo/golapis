@@ -140,7 +140,7 @@ func parseQueryString(rawQuery string, maxArgs int) ([]queryArg, bool) {
 		return result, false
 	}
 
-	for _, part := range strings.Split(rawQuery, "&") {
+	for part := range strings.SplitSeq(rawQuery, "&") {
 		if part == "" {
 			continue
 		}
@@ -148,10 +148,10 @@ func parseQueryString(rawQuery string, maxArgs int) ([]queryArg, bool) {
 		var key, value string
 		var isBoolean bool
 
-		if idx := strings.Index(part, "="); idx >= 0 {
+		if before, after, ok := strings.Cut(part, "="); ok {
 			// Has "=" sign: key=value or key=
-			key = part[:idx]
-			value = part[idx+1:]
+			key = before
+			value = after
 			isBoolean = false
 		} else {
 			// No "=" sign: boolean arg

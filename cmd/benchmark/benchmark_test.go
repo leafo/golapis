@@ -205,7 +205,7 @@ func BenchmarkFFI_VsCAPI_100Calls_CAPI(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup to trigger JIT
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -231,7 +231,7 @@ func BenchmarkFFI_VsCAPI_100Calls_PureLua(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup to trigger JIT
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -258,7 +258,7 @@ func BenchmarkFFI_VsCAPI_10000Calls_CAPI(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		L.CallChunkC(name)
 	}
 
@@ -284,7 +284,7 @@ func BenchmarkFFI_VsCAPI_10000Calls_PureLua(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		L.CallChunkC(name)
 	}
 
@@ -309,7 +309,7 @@ func BenchmarkFFI_NoopCall_CAPI(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -335,7 +335,7 @@ func BenchmarkFFI_NoopCall_PureLua(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -360,7 +360,7 @@ func BenchmarkBatching_Individual100(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// 100 CGO crossings - this is the "bad" pattern
-		for j := 0; j < 100; j++ {
+		for j := range 100 {
 			L.PushInteger(j)
 			L.SetGlobalC(name)
 		}
@@ -381,7 +381,7 @@ func BenchmarkBatching_SingleLuaLoop100(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -401,7 +401,7 @@ func BenchmarkBatching_Individual1000(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		for j := 0; j < 1000; j++ {
+		for j := range 1000 {
 			L.PushInteger(j)
 			L.SetGlobalC(name)
 		}
@@ -422,7 +422,7 @@ func BenchmarkBatching_SingleLuaLoop1000(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -466,7 +466,7 @@ func BenchmarkCallback_PureLuaFunc(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -493,7 +493,7 @@ func BenchmarkCallback_CAPIFunc(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -581,7 +581,7 @@ func BenchmarkStrings_LuaStringProcessing(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -603,7 +603,7 @@ func BenchmarkTables_CreatePopulate100(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		L.NewTable()
-		for j := 0; j < 100; j++ {
+		for j := range 100 {
 			L.SetTableInt(-1, j, j*2)
 		}
 		L.Pop(1)
@@ -625,7 +625,7 @@ func BenchmarkTables_CreatePopulate100_Lua(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -652,7 +652,7 @@ func BenchmarkTables_DeepNesting(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -702,7 +702,7 @@ func BenchmarkRealWorld_SingleRequestPattern(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -748,7 +748,7 @@ func BenchmarkRealWorld_JSONLikeProcessing(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 
@@ -774,7 +774,7 @@ func BenchmarkRealWorld_PrecompiledChunk(b *testing.B) {
 	defer FreeCString(name)
 
 	// Warmup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		L.CallChunkC(name)
 	}
 

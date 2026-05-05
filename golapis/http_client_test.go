@@ -33,7 +33,7 @@ func setupHTTPTestServer() *httptest.Server {
 
 func handleEcho(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
-	response := map[string]interface{}{
+	response := map[string]any{
 		"method":  r.Method,
 		"path":    r.URL.Path,
 		"query":   r.URL.RawQuery,
@@ -109,7 +109,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(code)
-	w.Write([]byte(fmt.Sprintf("Status: %d", code)))
+	w.Write(fmt.Appendf(nil, "Status: %d", code))
 }
 
 func handleSlow(w http.ResponseWriter, r *http.Request) {

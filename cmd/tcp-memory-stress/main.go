@@ -82,10 +82,7 @@ func main() {
 	for completed < *iterations {
 		// Determine batch size for this iteration
 		remaining := *iterations - completed
-		currentBatch := *batchSize
-		if remaining < currentBatch {
-			currentBatch = remaining
-		}
+		currentBatch := min(remaining, *batchSize)
 
 		// Run batch
 		runBatch(gls, serverPort, currentBatch)
@@ -115,7 +112,7 @@ func main() {
 
 func runBatch(gls *golapis.GolapisLuaState, port, count int) {
 	// Schedule all iterations via timers - they run concurrently within Lua's event model
-	for i := 0; i < count; i++ {
+	for range count {
 		code := fmt.Sprintf(`
 			golapis.timer.at(0, function()
 				local sock = golapis.socket.tcp()

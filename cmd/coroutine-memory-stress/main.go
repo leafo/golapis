@@ -71,10 +71,7 @@ func main() {
 	for completed < *iterations {
 		// Determine batch size for this iteration
 		remaining := *iterations - completed
-		currentBatch := *batchSize
-		if remaining < currentBatch {
-			currentBatch = remaining
-		}
+		currentBatch := min(remaining, *batchSize)
 
 		// Run batch
 		runBatch(gls, currentBatch)
@@ -104,7 +101,7 @@ func main() {
 
 // runBatch schedules coroutine stress test iterations
 func runBatch(gls *golapis.GolapisLuaState, count int) {
-	for i := 0; i < count; i++ {
+	for range count {
 		// Test 1: Basic create/resume/destroy
 		code1 := `
 			for i = 1, 10 do

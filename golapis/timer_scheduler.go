@@ -227,13 +227,13 @@ func (h scheduledEntryHeap) Swap(i, j int) {
 	h[j].index = j
 }
 
-func (h *scheduledEntryHeap) Push(x interface{}) {
+func (h *scheduledEntryHeap) Push(x any) {
 	entry := x.(*scheduledEntry)
 	entry.index = len(*h)
 	*h = append(*h, entry)
 }
 
-func (h *scheduledEntryHeap) Pop() interface{} {
+func (h *scheduledEntryHeap) Pop() any {
 	old := *h
 	n := len(old)
 	entry := old[n-1]
