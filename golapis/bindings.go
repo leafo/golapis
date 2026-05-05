@@ -1156,6 +1156,12 @@ func golapis_sleep(L *C.lua_State) C.int {
 	}
 
 	seconds := float64(C.lua_tonumber(L, 1))
+	maxSleepSeconds := float64(time.Duration(1<<63-1)) / float64(time.Second)
+	if seconds < 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds > maxSleepSeconds {
+		C.lua_pushnil(L)
+		pushGoString(L, "sleep argument must be a valid non-negative duration")
+		return 2
+	}
 
 	// Get the current thread
 	thread := getLuaThreadFromRegistry(L)
@@ -1169,33 +1175,17 @@ func golapis_sleep(L *C.lua_State) C.int {
 		debugLog("sleep: co=%p seconds=%f", L, seconds)
 	}
 
-	if seconds == 0 {
-		// Yield back to the event loop without spawning a timer goroutine.
-		event := &StateEvent{
-			Type:         EventResumeThread,
-			Thread:       thread,
-			ResumeValues: nil, // sleep returns nothing
-			Response:     nil, // no response needed for internal events
-		}
-		select {
-		case thread.state.eventChan <- event:
-		default:
-			go func() {
-				thread.state.eventChan <- event
-			}()
-		}
-	} else {
-		// Start async timer that will send to eventChan when done
-		go func() {
-			time.Sleep(time.Duration(seconds * float64(time.Second)))
-			thread.state.eventChan <- &StateEvent{
-				Type:         EventResumeThread,
-				Thread:       thread,
-				ResumeValues: nil, // sleep returns nothing
-				Response:     nil, // no response needed for internal events
-			}
-		}()
+	if thread.state.timerSched == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "timer scheduler is not running")
+		return 2
 	}
+	thread.state.timerSched.addResume(&StateEvent{
+		Type:         EventResumeThread,
+		Thread:       thread,
+		ResumeValues: nil, // sleep returns nothing
+		Response:     nil, // no response needed for internal events
+	}, time.Duration(seconds*float64(time.Second)))
 
 	return C.lua_yield_wrapper(L, 0)
 }
@@ -1954,7 +1944,7 @@ func golapis_timer_at(L *C.lua_State) C.int {
 		pushGoString(L, "timer.at: could not find golapis state")
 		return 2
 	}
-	if delay > 0 && gls.timerSched == nil {
+	if gls.timerSched == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "timer scheduler is not running")
 		return 2
@@ -1988,7 +1978,6 @@ func golapis_timer_at(L *C.lua_State) C.int {
 		State: gls,
 		CoRef: coRef,
 		Co:    co,
-		index: -1,
 	}
 
 	// Add to pending timers set
@@ -1999,14 +1988,7 @@ func golapis_timer_at(L *C.lua_State) C.int {
 	// Track this timer in the wait group so Wait() blocks until timer completes
 	gls.threadWg.Add(1)
 
-	if delay == 0 {
-		// Optimization: skip goroutine for immediate execution
-		if timer.claim() {
-			gls.enqueueTimerFire(timer, false)
-		}
-	} else {
-		gls.timerSched.add(timer, time.Duration(delay*float64(time.Second)))
-	}
+	gls.timerSched.addTimer(timer, time.Duration(delay*float64(time.Second)))
 
 	if debugEnabled {
 		debugLog("timer.at: created timer co=%p delay=%v", co, delay)

@@ -59,7 +59,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 )
 
@@ -104,12 +103,11 @@ type GolapisLuaState struct {
 // arguments can be passed directly without having to serialize them through
 // go.
 type PendingTimer struct {
-	State    *GolapisLuaState // parent state
-	CoRef    C.int            // registry ref to coroutine (prevents GC)
-	Co       *C.lua_State     // the coroutine pointer
-	deadline time.Time        // scheduler deadline
-	index    int              // heap index, -1 when not queued
-	fired    atomic.Bool      // true once a callback event has been claimed
+	State      *GolapisLuaState // parent state
+	CoRef      C.int            // registry ref to coroutine (prevents GC)
+	Co         *C.lua_State     // the coroutine pointer
+	schedEntry *scheduledEntry  // heap entry while queued
+	fired      atomic.Bool      // true once a callback event has been claimed
 }
 
 // claim marks the timer as fired/cancelled so only one event can be queued.
@@ -618,36 +616,22 @@ func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 // CancelAllTimers cancels all pending timers, triggering them with premature=true
 // unless the state is stopping.
 func (gls *GolapisLuaState) CancelAllTimers() {
-	gls.timerMu.Lock()
-	timers := make([]*PendingTimer, 0, len(gls.pendingTimers))
-	for timer := range gls.pendingTimers {
-		timers = append(timers, timer)
+	if gls.stopping.Load() || gls.timerSched == nil {
+		return
 	}
-	gls.timerMu.Unlock()
-
-	for _, timer := range timers {
-		if gls.timerSched != nil {
-			gls.timerSched.remove(timer)
-		}
-		if timer.claim() && !gls.stopping.Load() {
-			gls.enqueueTimerFire(timer, true)
-		}
-	}
+	gls.timerSched.cancelPendingTimers()
 }
 
 func (gls *GolapisLuaState) enqueueTimerFire(timer *PendingTimer, premature bool) {
-	event := &StateEvent{
+	gls.enqueueEvent(&StateEvent{
 		Type:      EventTimerFire,
 		Timer:     timer,
 		Premature: premature,
-	}
-	select {
-	case gls.eventChan <- event:
-	default:
-		go func() {
-			gls.eventChan <- event
-		}()
-	}
+	})
+}
+
+func (gls *GolapisLuaState) enqueueEvent(event *StateEvent) {
+	gls.eventChan <- event
 }
 
 func (gls *GolapisLuaState) discardTimer(timer *PendingTimer) {
