@@ -77,6 +77,11 @@ static int lua_next_wrapper(lua_State *L, int idx) {
     return lua_next(L, idx);
 }
 
+// Call a metamethod by name. Returns 1 if the metamethod was found and called.
+static int luaL_callmeta_wrapper(lua_State *L, int obj, const char *e) {
+    return luaL_callmeta(L, obj, e);
+}
+
 // For getting string with length (handles embedded NULs)
 static const char* lua_tolstring_wrapper(lua_State *L, int idx, size_t *len) {
     return lua_tolstring(L, idx, len);

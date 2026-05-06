@@ -9,6 +9,7 @@ extern int golapis_http_request(lua_State *L);
 extern int golapis_http_request_internal(lua_State *L);
 extern int golapis_print(lua_State *L);
 extern int golapis_say(lua_State *L);
+extern int golapis_log(lua_State *L);
 extern int golapis_req_get_uri_args(lua_State *L);
 extern int golapis_req_get_headers(lua_State *L);
 extern int golapis_req_headers_index(lua_State *L);
@@ -103,6 +104,14 @@ static int c_print_wrapper(lua_State *L) {
 
 static int c_say_wrapper(lua_State *L) {
     return golapis_say(L);
+}
+
+static int c_log_wrapper(lua_State *L) {
+    int result = golapis_log(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
 }
 
 static int c_req_get_uri_args_wrapper(lua_State *L) {
@@ -573,6 +582,9 @@ static int setup_golapis_global(lua_State *L) {
     lua_pushcfunction(L, c_say_wrapper);
     lua_setfield(L, -2, "say");
 
+    lua_pushcfunction(L, c_log_wrapper);
+    lua_setfield(L, -2, "log");
+
     lua_pushcfunction(L, c_exit_wrapper);
     lua_setfield(L, -2, "exit");
 
@@ -644,6 +656,26 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "OK");
     lua_pushinteger(L, -1);
     lua_setfield(L, -2, "ERROR");
+
+    // Nginx log level constants (ngx.STDERR .. ngx.DEBUG)
+    lua_pushinteger(L, 0);
+    lua_setfield(L, -2, "STDERR");
+    lua_pushinteger(L, 1);
+    lua_setfield(L, -2, "EMERG");
+    lua_pushinteger(L, 2);
+    lua_setfield(L, -2, "ALERT");
+    lua_pushinteger(L, 3);
+    lua_setfield(L, -2, "CRIT");
+    lua_pushinteger(L, 4);
+    lua_setfield(L, -2, "ERR");
+    lua_pushinteger(L, 5);
+    lua_setfield(L, -2, "WARN");
+    lua_pushinteger(L, 6);
+    lua_setfield(L, -2, "NOTICE");
+    lua_pushinteger(L, 7);
+    lua_setfield(L, -2, "INFO");
+    lua_pushinteger(L, 8);
+    lua_setfield(L, -2, "DEBUG");
 
     // Create http table
     lua_newtable(L);
@@ -754,6 +786,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -1691,6 +1724,100 @@ func formatLuaNumber(num float64) string {
 // badArgError returns a user-facing error message for golapis functions.
 func badArgError(argNum int, funcName, gotType string) string {
 	return fmt.Sprintf("bad argument #%d to 'golapis.%s' (string, number, boolean, nil, golapis.null, or array table expected, got %s)", argNum, funcName, gotType)
+}
+
+func badLogArgError(argNum int, gotType string) string {
+	return fmt.Sprintf("bad argument #%d to 'golapis.log' (string, number, boolean, nil, golapis.null, or table with __tostring expected, got %s)", argNum, gotType)
+}
+
+var logLevelNames = [...]string{
+	"STDERR",
+	"EMERG",
+	"ALERT",
+	"CRIT",
+	"ERR",
+	"WARN",
+	"NOTICE",
+	"INFO",
+	"DEBUG",
+}
+
+func coerceLogValueToString(L *C.lua_State, idx C.int, argNum int) (string, error) {
+	luaType := C.lua_type(L, idx)
+
+	switch luaType {
+	case C.LUA_TSTRING:
+		return string(luaStringBytes(L, idx)), nil
+
+	case C.LUA_TNUMBER:
+		return formatLuaNumber(float64(C.lua_tonumber(L, idx))), nil
+
+	case C.LUA_TBOOLEAN:
+		if C.lua_toboolean(L, idx) != 0 {
+			return "true", nil
+		}
+		return "false", nil
+
+	case C.LUA_TNIL:
+		return "nil", nil
+
+	case C.LUA_TLIGHTUSERDATA:
+		ptr := C.lua_touserdata_wrapper(L, idx)
+		if ptr == nil {
+			return "null", nil
+		}
+		return "", errors.New(badLogArgError(argNum, "lightuserdata"))
+
+	case C.LUA_TTABLE:
+		absIdx := luaAbsIndex(L, idx)
+		cmeta := C.CString("__tostring")
+		defer C.free(unsafe.Pointer(cmeta))
+		if C.luaL_callmeta_wrapper(L, absIdx, cmeta) == 0 {
+			return "", errors.New(badLogArgError(argNum, "table"))
+		}
+		defer C.lua_pop_wrapper(L, 1)
+		if C.lua_isstring(L, -1) == 0 {
+			return "", errors.New(badLogArgError(argNum, C.GoString(C.lua_typename(L, C.lua_type(L, -1)))))
+		}
+		return string(luaStringBytes(L, -1)), nil
+
+	default:
+		typeName := C.GoString(C.lua_typename(L, luaType))
+		return "", errors.New(badLogArgError(argNum, typeName))
+	}
+}
+
+//export golapis_log
+func golapis_log(L *C.lua_State) C.int {
+	if C.lua_gettop(L) < 1 || C.lua_isnumber(L, 1) == 0 {
+		pushGoString(L, "bad argument #1 to 'golapis.log' (log level number expected)")
+		return -1
+	}
+
+	level := int(C.lua_tonumber(L, 1))
+	if level < 0 || level > 8 {
+		pushGoString(L, fmt.Sprintf("bad log level: %d", level))
+		return -1
+	}
+
+	buf := bufferPool.Get().(*bytes.Buffer)
+	defer func() {
+		buf.Reset()
+		bufferPool.Put(buf)
+	}()
+
+	nargs := int(C.lua_gettop(L))
+	for i := 2; i <= nargs; i++ {
+		part, err := coerceLogValueToString(L, C.int(i), i)
+		if err != nil {
+			pushGoString(L, err.Error())
+			return -1
+		}
+		buf.WriteString(part)
+	}
+
+	log.Printf("[lua] [%s] %s", logLevelNames[level], buf.String())
+	return 0
 }
 
 // getOutputWriter returns the output writer for the current context

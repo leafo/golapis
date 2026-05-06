@@ -231,6 +231,7 @@ The `golapis` global table provides an ngx-compatible API. Functions use the sam
 |----------|-------------|
 | `golapis.say(...)` | Output with newline |
 | `golapis.print(...)` | Output without newline |
+| `golapis.log(level, ...)` | Write to error log with nginx log level |
 | `golapis.null` | Null sentinel value |
 | `golapis.sleep(seconds)` | Async sleep, yields coroutine |
 | `golapis.now()` | Returns current Unix timestamp with microsecond precision |
@@ -257,6 +258,13 @@ The `golapis` global table provides an ngx-compatible API. Functions use the sam
 | `golapis.header.*` | Response headers (write before first output) |
 | `golapis.status` | HTTP response status code (read/write, set before first output) |
 | `golapis.ctx` | Per-request Lua table for storing data |
+
+### Logging Constants
+
+`golapis.log` accepts nginx-compatible log level constants:
+`golapis.STDERR`, `golapis.EMERG`, `golapis.ALERT`, `golapis.CRIT`,
+`golapis.ERR`, `golapis.WARN`, `golapis.NOTICE`, `golapis.INFO`, and
+`golapis.DEBUG`.
 
 ### golapis.var Variables
 
