@@ -21,6 +21,15 @@ func (f *fileServerFlags) Set(value string) error {
 	return nil
 }
 
+// sharedDictFlags implements flag.Value to collect multiple --shared-dict flags
+type sharedDictFlags []string
+
+func (f *sharedDictFlags) String() string { return strings.Join(*f, ", ") }
+func (f *sharedDictFlags) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
 var (
 	version   = "dev"
 	gitCommit = "unknown"
@@ -37,6 +46,8 @@ func main() {
 	ngxFlag := flag.Bool("ngx", false, "alias golapis table to global ngx")
 	var fileServers fileServerFlags
 	flag.Var(&fileServers, "file-server", "Serve static files: LOCAL_PATH:URL_PREFIX (can be repeated)")
+	var sharedDicts sharedDictFlags
+	flag.Var(&sharedDicts, "shared-dict", "Declare a shared dictionary: NAME:SIZE (e.g. cache:10m, can be repeated)")
 	flag.Parse()
 
 	if *versionFlag || *vFlag {
@@ -63,6 +74,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  --port   port for HTTP server (default 8080)")
 		fmt.Fprintln(os.Stderr, "  --ngx    alias golapis table to global ngx")
 		fmt.Fprintln(os.Stderr, "  --file-server PATH[:URL] serve static files (can be repeated)")
+		fmt.Fprintln(os.Stderr, "  --shared-dict NAME:SIZE  declare a shared dictionary (can be repeated)")
 		os.Exit(1)
 	}
 
@@ -71,6 +83,14 @@ func main() {
 	if len(args) > 0 {
 		filename = args[0]
 		scriptArgs = args[1:]
+	}
+
+	// Register shared dicts before any Lua state is created
+	for _, sd := range sharedDicts {
+		if err := registerSharedDictFlag(sd); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 
 	if *httpFlag {
@@ -87,6 +107,19 @@ func main() {
 	} else {
 		runSingleExecution(filename, scriptArgs, *lFlag, *eFlag, *ngxFlag)
 	}
+}
+
+// registerSharedDictFlag parses a NAME:SIZE flag value and registers the dict
+func registerSharedDictFlag(spec string) error {
+	name, size, ok := strings.Cut(spec, ":")
+	if !ok || name == "" || size == "" {
+		return fmt.Errorf("invalid shared dict %q, expected NAME:SIZE (e.g. cache:10m)", spec)
+	}
+	bytes, err := golapis.ParseHumanSize(size)
+	if err != nil {
+		return fmt.Errorf("invalid shared dict size %q: %w", size, err)
+	}
+	return golapis.RegisterSharedDict(name, bytes)
 }
 
 func runSingleExecution(filename string, scriptArgs []string, requireLib string, executeCode string, ngxAlias bool) {

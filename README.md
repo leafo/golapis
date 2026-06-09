@@ -27,6 +27,7 @@ Options:
   --port   port for HTTP server (default 8080)
   --ngx    alias golapis table to global ngx
   --file-server PATH[:URL] serve static files (can be repeated)
+  --shared-dict NAME:SIZE  declare a shared dictionary (can be repeated)
 ```
 
 ### Running Scripts
@@ -253,6 +254,7 @@ The `golapis` global table provides an ngx-compatible API. Functions use the sam
 | `golapis.req.get_headers([max], [raw])` | Get request headers as table |
 | `golapis.timer.at(delay, cb, ...)` | Schedule callback after delay |
 | `golapis.socket.udp()` | Create UDP cosocket (see below) |
+| `golapis.shared.<name>` | Shared dictionary (see below) |
 | `golapis.location.capture(uri)` | Internal subrequest (see below) |
 | `golapis.var.*` | Request variables (read-only, HTTP mode only) |
 | `golapis.header.*` | Response headers (write before first output) |
@@ -351,6 +353,38 @@ local res = golapis.location.capture("/path?args")
 
 The second `opts` table argument (for setting method, body, args, etc.) is not
 yet supported.
+
+### golapis.shared
+
+Implements the `ngx.shared.DICT` API. Dictionaries must be declared at startup
+with the `--shared-dict NAME:SIZE` flag (size accepts `k`/`m`/`g` suffixes,
+minimum 8192 bytes, matching OpenResty) and are shared across all requests for
+the lifetime of the process. Accessing an undeclared dictionary returns `nil`.
+
+```bash
+golapis --http --ngx --shared-dict cache:10m app.lua
+```
+
+```lua
+local cache = golapis.shared.cache  -- or ngx.shared.cache with --ngx
+
+cache:set("key", "value", 60)            -- expires in 60 seconds
+local v = cache:get("key")
+local hits = cache:incr("hits", 1, 0)    -- init to 0 if missing
+```
+
+The full API is supported with OpenResty semantics: `get`, `get_stale`, `set`,
+`safe_set`, `add`, `safe_add`, `replace`, `delete`, `incr` (with `init` and
+`init_ttl`), `ttl`, `expire`, `get_keys`, `flush_all`, `flush_expired`,
+`capacity`, `free_space`, and the list operations `lpush`, `rpush`, `lpop`,
+`rpop`, `llen`. When a dictionary fills up, writes evict least-recently-used
+entries (reported via `set`'s third `forcible` return value); `safe_set` and
+`safe_add` return `"no memory"` instead of evicting. Memory accounting
+approximates nginx's slab allocator, so `free_space()` values are close to but
+not identical to OpenResty's.
+
+Dictionaries can also be declared from Go with
+`golapis.RegisterSharedDict(name, sizeBytes)` before creating a state.
 
 ## Extensions
 

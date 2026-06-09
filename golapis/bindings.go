@@ -72,6 +72,29 @@ extern int golapis_tcp_gc(lua_State *L);
 // Location capture (internal subrequest)
 extern int golapis_location_capture(lua_State *L);
 
+// Shared dict functions
+extern int golapis_shdict_get(lua_State *L);
+extern int golapis_shdict_get_stale(lua_State *L);
+extern int golapis_shdict_set(lua_State *L);
+extern int golapis_shdict_safe_set(lua_State *L);
+extern int golapis_shdict_add(lua_State *L);
+extern int golapis_shdict_safe_add(lua_State *L);
+extern int golapis_shdict_replace(lua_State *L);
+extern int golapis_shdict_delete(lua_State *L);
+extern int golapis_shdict_incr(lua_State *L);
+extern int golapis_shdict_ttl(lua_State *L);
+extern int golapis_shdict_expire(lua_State *L);
+extern int golapis_shdict_get_keys(lua_State *L);
+extern int golapis_shdict_flush_all(lua_State *L);
+extern int golapis_shdict_flush_expired(lua_State *L);
+extern int golapis_shdict_capacity(lua_State *L);
+extern int golapis_shdict_free_space(lua_State *L);
+extern int golapis_shdict_lpush(lua_State *L);
+extern int golapis_shdict_rpush(lua_State *L);
+extern int golapis_shdict_lpop(lua_State *L);
+extern int golapis_shdict_rpop(lua_State *L);
+extern int golapis_shdict_llen(lua_State *L);
+
 // Phase detection
 extern int golapis_get_phase(lua_State *L);
 
@@ -453,6 +476,39 @@ static int c_location_capture_wrapper(lua_State *L) {
     return golapis_location_capture(L);
 }
 
+// Shared dict wrappers: a negative return from the Go function means a Lua
+// error message was pushed and must be raised (bad zone/argument errors).
+#define GOLAPIS_SHDICT_WRAPPER(name) \
+    static int c_shdict_##name##_wrapper(lua_State *L) { \
+        int result = golapis_shdict_##name(L); \
+        if (result < 0) { \
+            return luaL_error(L, "%s", lua_tostring(L, -1)); \
+        } \
+        return result; \
+    }
+
+GOLAPIS_SHDICT_WRAPPER(get)
+GOLAPIS_SHDICT_WRAPPER(get_stale)
+GOLAPIS_SHDICT_WRAPPER(set)
+GOLAPIS_SHDICT_WRAPPER(safe_set)
+GOLAPIS_SHDICT_WRAPPER(add)
+GOLAPIS_SHDICT_WRAPPER(safe_add)
+GOLAPIS_SHDICT_WRAPPER(replace)
+GOLAPIS_SHDICT_WRAPPER(delete)
+GOLAPIS_SHDICT_WRAPPER(incr)
+GOLAPIS_SHDICT_WRAPPER(ttl)
+GOLAPIS_SHDICT_WRAPPER(expire)
+GOLAPIS_SHDICT_WRAPPER(get_keys)
+GOLAPIS_SHDICT_WRAPPER(flush_all)
+GOLAPIS_SHDICT_WRAPPER(flush_expired)
+GOLAPIS_SHDICT_WRAPPER(capacity)
+GOLAPIS_SHDICT_WRAPPER(free_space)
+GOLAPIS_SHDICT_WRAPPER(lpush)
+GOLAPIS_SHDICT_WRAPPER(rpush)
+GOLAPIS_SHDICT_WRAPPER(lpop)
+GOLAPIS_SHDICT_WRAPPER(rpop)
+GOLAPIS_SHDICT_WRAPPER(llen)
+
 // Main table __index metamethod
 // Stack: [golapis_table, key]
 static int c_main_index_wrapper(lua_State *L) {
@@ -551,6 +607,59 @@ static void init_tcp_socket_metatable(lua_State *L) {
     // GC metamethod
     lua_pushcfunction(L, c_tcp_gc_wrapper);
     lua_setfield(L, -2, "__gc");
+
+    lua_pop(L, 1);  // Pop metatable (stored in registry)
+}
+
+// Initialize the shared dict metatable in the registry (call once during setup)
+static void init_shdict_metatable(lua_State *L) {
+    luaL_newmetatable(L, "golapis.shdict");
+
+    // Create methods table for __index
+    lua_newtable(L);
+    lua_pushcfunction(L, c_shdict_get_wrapper);
+    lua_setfield(L, -2, "get");
+    lua_pushcfunction(L, c_shdict_get_stale_wrapper);
+    lua_setfield(L, -2, "get_stale");
+    lua_pushcfunction(L, c_shdict_set_wrapper);
+    lua_setfield(L, -2, "set");
+    lua_pushcfunction(L, c_shdict_safe_set_wrapper);
+    lua_setfield(L, -2, "safe_set");
+    lua_pushcfunction(L, c_shdict_add_wrapper);
+    lua_setfield(L, -2, "add");
+    lua_pushcfunction(L, c_shdict_safe_add_wrapper);
+    lua_setfield(L, -2, "safe_add");
+    lua_pushcfunction(L, c_shdict_replace_wrapper);
+    lua_setfield(L, -2, "replace");
+    lua_pushcfunction(L, c_shdict_delete_wrapper);
+    lua_setfield(L, -2, "delete");
+    lua_pushcfunction(L, c_shdict_incr_wrapper);
+    lua_setfield(L, -2, "incr");
+    lua_pushcfunction(L, c_shdict_ttl_wrapper);
+    lua_setfield(L, -2, "ttl");
+    lua_pushcfunction(L, c_shdict_expire_wrapper);
+    lua_setfield(L, -2, "expire");
+    lua_pushcfunction(L, c_shdict_get_keys_wrapper);
+    lua_setfield(L, -2, "get_keys");
+    lua_pushcfunction(L, c_shdict_flush_all_wrapper);
+    lua_setfield(L, -2, "flush_all");
+    lua_pushcfunction(L, c_shdict_flush_expired_wrapper);
+    lua_setfield(L, -2, "flush_expired");
+    lua_pushcfunction(L, c_shdict_capacity_wrapper);
+    lua_setfield(L, -2, "capacity");
+    lua_pushcfunction(L, c_shdict_free_space_wrapper);
+    lua_setfield(L, -2, "free_space");
+    lua_pushcfunction(L, c_shdict_lpush_wrapper);
+    lua_setfield(L, -2, "lpush");
+    lua_pushcfunction(L, c_shdict_rpush_wrapper);
+    lua_setfield(L, -2, "rpush");
+    lua_pushcfunction(L, c_shdict_lpop_wrapper);
+    lua_setfield(L, -2, "lpop");
+    lua_pushcfunction(L, c_shdict_rpop_wrapper);
+    lua_setfield(L, -2, "rpop");
+    lua_pushcfunction(L, c_shdict_llen_wrapper);
+    lua_setfield(L, -2, "llen");
+    lua_setfield(L, -2, "__index");  // metatable.__index = methods table
 
     lua_pop(L, 1);  // Pop metatable (stored in registry)
 }
@@ -755,11 +864,16 @@ static int setup_golapis_global(lua_State *L) {
     lua_pushcfunction(L, c_get_phase_wrapper);
     lua_setfield(L, -2, "get_phase");
 
+    // Create shared table; dict objects are added from Go in setupSharedDicts
+    lua_newtable(L);
+    lua_setfield(L, -2, "shared");      // golapis.shared = {}
+
     // Initialize cached metatables
     init_headers_metatable(L);
     init_main_metatable(L);
     init_udp_socket_metatable(L);
     init_tcp_socket_metatable(L);
+    init_shdict_metatable(L);
 
     // Apply metatable to golapis table (for status magic key)
     luaL_getmetatable(L, "golapis.main");  // Push cached metatable from registry
@@ -2550,6 +2664,7 @@ func (gls *GolapisLuaState) writeOutput(text string) {
 // SetupGolapis initializes the golapis global table with exported functions
 func (gls *GolapisLuaState) SetupGolapis() {
 	gls.golapisRef = C.setup_golapis_global(gls.luaState)
+	gls.setupSharedDicts()
 	gls.injectCoroutineModule()
 	if err := gls.runBootstrap(); err != nil {
 		panic(fmt.Sprintf("failed to run bootstrap: %v", err))
