@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1804,5 +1805,240 @@ func TestTCPSocketSendDoesNotBlockVM(t *testing.T) {
 	}
 	if !strings.Contains(output, "timer fired: true") {
 		t.Errorf("expected timer to fire during blocked send, got: %q", output)
+	}
+}
+
+func TestNormalizeNetError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"eof", io.EOF, "closed"},
+		{"net closed", &net.OpError{Op: "read", Err: net.ErrClosed}, "closed"},
+		{"deadline", &net.OpError{Op: "read", Err: os.ErrDeadlineExceeded}, "timeout"},
+		{"refused", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}, "connection refused"},
+		{"reset", &net.OpError{Op: "read", Err: os.NewSyscallError("read", syscall.ECONNRESET)}, "connection reset by peer"},
+		{"pipe", &net.OpError{Op: "write", Err: os.NewSyscallError("write", syscall.EPIPE)}, "broken pipe"},
+		{"dns", &net.OpError{Op: "dial", Err: &net.DNSError{Name: "foo.invalid", IsNotFound: true}}, "foo.invalid could not be resolved"},
+	}
+	for _, c := range cases {
+		if got := normalizeNetError(c.err); got != c.want {
+			t.Errorf("%s: normalizeNetError = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// findLatestTCPSocket returns the most recently registered TCP socket.
+func findLatestTCPSocket(t *testing.T) *TCPSocket {
+	t.Helper()
+	tcpSocketMu.Lock()
+	defer tcpSocketMu.Unlock()
+	var sock *TCPSocket
+	var maxID uint64
+	for id, s := range tcpSocketMap {
+		if id > maxID {
+			maxID = id
+			sock = s
+		}
+	}
+	if sock == nil {
+		t.Fatal("no TCP socket registered")
+	}
+	return sock
+}
+
+func TestTCPSocketDefaultTimeouts(t *testing.T) {
+	gls := NewGolapisLuaState()
+	if gls == nil {
+		t.Fatal("Failed to create Lua state")
+	}
+	defer gls.Close()
+	gls.Start()
+	defer gls.Stop()
+
+	// Keep the socket in a global so it isn't collected before we inspect it
+	if err := gls.RunString(`sock = golapis.socket.tcp()`); err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	gls.Wait()
+
+	sock := findLatestTCPSocket(t)
+	if sock.connectTimeout != defaultSocketTimeout ||
+		sock.readTimeout != defaultSocketTimeout ||
+		sock.writeTimeout != defaultSocketTimeout {
+		t.Errorf("expected %v default timeouts, got connect=%v read=%v write=%v",
+			defaultSocketTimeout, sock.connectTimeout, sock.readTimeout, sock.writeTimeout)
+	}
+}
+
+func TestTCPSocketSettimeoutZeroRestoresDefault(t *testing.T) {
+	gls := NewGolapisLuaState()
+	if gls == nil {
+		t.Fatal("Failed to create Lua state")
+	}
+	defer gls.Close()
+	gls.Start()
+	defer gls.Stop()
+
+	if err := gls.RunString(`
+		sock = golapis.socket.tcp()
+		sock:settimeout(5000)
+		sock:settimeout(0)
+	`); err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	gls.Wait()
+
+	sock := findLatestTCPSocket(t)
+	if sock.readTimeout != defaultSocketTimeout {
+		t.Errorf("expected settimeout(0) to restore %v default, got %v",
+			defaultSocketTimeout, sock.readTimeout)
+	}
+}
+
+func TestTCPSocketSetkeepaliveZeroNeverExpires(t *testing.T) {
+	serverAddr, cleanup := startTCPEchoServer(t)
+	defer cleanup()
+
+	code := `
+		local sock = golapis.socket.tcp()
+		sock:settimeout(1000)
+		local ok, err = sock:connect("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("connect error: ", err)
+			return
+		end
+
+		local ok, err = sock:setkeepalive(0)
+		if not ok then
+			golapis.say("setkeepalive error: ", err)
+			return
+		end
+
+		-- With timeout 0 the pooled entry must never expire. With the old
+		-- (buggy) semantics it was destroyed immediately.
+		golapis.sleep(0.3)
+
+		local sock2 = golapis.socket.tcp()
+		sock2:settimeout(1000)
+		local ok, err = sock2:connect("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("reconnect error: ", err)
+			return
+		end
+		golapis.say("reused: ", sock2:getreusedtimes())
+		sock2:close()
+	`
+
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "reused: 1") {
+		t.Errorf("expected pooled connection to survive with timeout 0, got: %q", output)
+	}
+}
+
+func TestTCPSocketAutoCloseOnFatalReceiveError(t *testing.T) {
+	// Server accepts then immediately closes, so the client's receive fails
+	// with "closed". The socket must enter the closed state: pooling it via
+	// setkeepalive or sending on it must fail with "closed" (matching
+	// OpenResty, see t/023-rewrite/tcp-socket.t).
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	defer listener.Close()
+	serverAddr := listener.Addr().(*net.TCPAddr)
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	code := `
+		local sock = golapis.socket.tcp()
+		sock:settimeout(1000)
+		local ok, err = sock:connect("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("connect error: ", err)
+			return
+		end
+
+		local data, err = sock:receive("*l")
+		golapis.say("receive err: ", tostring(err))
+
+		local ok, err = sock:setkeepalive()
+		golapis.say("setkeepalive err: ", tostring(err))
+
+		local ok, err = sock:send("x")
+		golapis.say("send err: ", tostring(err))
+	`
+
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "receive err: closed") {
+		t.Errorf("expected receive to fail with 'closed', got: %q", output)
+	}
+	if !strings.Contains(output, "setkeepalive err: closed") {
+		t.Errorf("expected setkeepalive to fail with 'closed' after auto-close, got: %q", output)
+	}
+	if !strings.Contains(output, "send err: closed") {
+		t.Errorf("expected send to fail with 'closed' after auto-close, got: %q", output)
+	}
+}
+
+func TestTCPSocketSettimeoutNegativeRaisesError(t *testing.T) {
+	code := `
+		local sock = golapis.socket.tcp()
+		local ok, err = pcall(function() sock:settimeout(-1) end)
+		golapis.say("settimeout ok: ", tostring(ok), " err: ", tostring(err))
+
+		local ok, err = pcall(function() sock:settimeouts(1000, -1, 1000) end)
+		golapis.say("settimeouts ok: ", tostring(ok), " err: ", tostring(err))
+	`
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "settimeout ok: false") ||
+		!strings.Contains(output, "settimeouts ok: false") {
+		t.Errorf("expected negative timeouts to raise errors, got: %q", output)
+	}
+	if !strings.Contains(output, "bad timeout value") {
+		t.Errorf("expected 'bad timeout value' error message, got: %q", output)
+	}
+}
+
+func TestTCPSocketConnectionRefusedError(t *testing.T) {
+	// Grab a port with no listener by binding and immediately closing.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+
+	code := `
+		local sock = golapis.socket.tcp()
+		sock:settimeout(1000)
+		local ok, err = sock:connect("127.0.0.1", ` + itoa(port) + `)
+		golapis.say("err: ", tostring(err))
+	`
+
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "err: connection refused") {
+		t.Errorf("expected OpenResty-style 'connection refused', got: %q", output)
 	}
 }

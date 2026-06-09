@@ -123,6 +123,28 @@ func checkTCPSocketBusy(L *C.lua_State, sock *TCPSocket, checkConnect, checkRead
 	return true
 }
 
+// closeOnError tears down the connection after a fatal (non-timeout) send or
+// receive error, matching OpenResty's auto-close semantics: timeout errors
+// leave the connection open, every other error puts the socket in the
+// "closed" state (subsequent operations return nil, "closed") so the dead
+// connection can't be pooled via setkeepalive. Must run on the event-loop
+// goroutine (i.e. from an OnResume callback).
+func (sock *TCPSocket) closeOnError() {
+	if sock.closed || sock.conn == nil {
+		return
+	}
+	sock.conn.Close()
+	sock.conn = nil
+	sock.closed = true
+	sock.connected = false
+	sock.readBuf = nil
+	sock.readBufPos = 0
+	sock.connecting = false
+	sock.reading = false
+	sock.writing = false
+	sock.gen++
+}
+
 func consumeLineFromBuffer(sock *TCPSocket) (string, bool) {
 	// OpenResty line-mode semantics: stop at LF, strip any CR bytes in the line.
 	if sock.readBufPos >= len(sock.readBuf) {
@@ -165,9 +187,9 @@ func consumeLineFromBuffer(sock *TCPSocket) (string, bool) {
 func golapis_socket_tcp_new(L *C.lua_State) C.int {
 	thread := getLuaThreadFromRegistry(L)
 	sock := &TCPSocket{
-		connectTimeout: 0,
-		readTimeout:    0,
-		writeTimeout:   0,
+		connectTimeout: defaultSocketTimeout,
+		readTimeout:    defaultSocketTimeout,
+		writeTimeout:   defaultSocketTimeout,
 		ownerThread:    thread,
 	}
 	id := registerTCPSocket(sock)
@@ -202,8 +224,17 @@ func golapis_tcp_settimeout(L *C.lua_State) C.int {
 		return -1
 	}
 
+	// Per OpenResty semantics, zero restores the default timeout and a
+	// negative value raises a Lua error
 	ms := float64(C.lua_tonumber(L, 2))
-	timeout := time.Duration(ms) * time.Millisecond
+	if ms < 0 {
+		pushGoString(L, "bad timeout value")
+		return -1
+	}
+	timeout := defaultSocketTimeout
+	if ms > 0 {
+		timeout = time.Duration(ms) * time.Millisecond
+	}
 	sock.connectTimeout = timeout
 	sock.readTimeout = timeout
 	sock.writeTimeout = timeout
@@ -226,13 +257,26 @@ func golapis_tcp_settimeouts(L *C.lua_State) C.int {
 		return -1
 	}
 
+	// Per OpenResty semantics, zero restores the default timeout and a
+	// negative value raises a Lua error
 	connectMs := float64(C.lua_tonumber(L, 2))
 	sendMs := float64(C.lua_tonumber(L, 3))
 	readMs := float64(C.lua_tonumber(L, 4))
+	if connectMs < 0 || sendMs < 0 || readMs < 0 {
+		pushGoString(L, "bad timeout value")
+		return -1
+	}
 
-	sock.connectTimeout = time.Duration(connectMs) * time.Millisecond
-	sock.writeTimeout = time.Duration(sendMs) * time.Millisecond
-	sock.readTimeout = time.Duration(readMs) * time.Millisecond
+	msToTimeout := func(ms float64) time.Duration {
+		if ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+		return defaultSocketTimeout
+	}
+
+	sock.connectTimeout = msToTimeout(connectMs)
+	sock.writeTimeout = msToTimeout(sendMs)
+	sock.readTimeout = msToTimeout(readMs)
 	return 0
 }
 
@@ -562,15 +606,19 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 
 		n, err := conn.Write(data)
 		if err != nil {
+			errStr := normalizeNetError(err)
 			if debugEnabled {
-				debugLog("tcp.send: id=%d bytes=%d error=%s", sockID, len(data), normalizeNetError(err))
+				debugLog("tcp.send: id=%d bytes=%d error=%s", sockID, len(data), errStr)
 			}
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
-				ResumeValues: []interface{}{nil, normalizeNetError(err)},
+				ResumeValues: []interface{}{nil, errStr},
 				OnResume: func(event *StateEvent) {
 					sock.writing = false
+					if errStr != "timeout" && sock.gen == gen {
+						sock.closeOnError()
+					}
 				},
 			}
 			return
@@ -745,9 +793,6 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 				}
 				if err != nil {
 					errStr := normalizeNetError(err)
-					if err == io.EOF {
-						errStr = "closed"
-					}
 					if debugEnabled {
 						debugLog("tcp.receive: id=%d mode=size error=%s partial=%d", sockID, errStr, len(result))
 					}
@@ -757,6 +802,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						ResumeValues: []interface{}{nil, errStr, string(result)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
+							if errStr != "timeout" && sock.gen == gen {
+								sock.closeOnError()
+							}
 						},
 					}
 					return
@@ -829,6 +877,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						ResumeValues: []interface{}{nil, errStr, string(result)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
+							if errStr != "timeout" && sock.gen == gen {
+								sock.closeOnError()
+							}
 						},
 					}
 					return
@@ -899,9 +950,6 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 
 				if err != nil {
 					errStr := normalizeNetError(err)
-					if err == io.EOF {
-						errStr = "closed"
-					}
 					partial := lineBuf
 					if bytes.IndexByte(partial, '\r') != -1 {
 						filtered := make([]byte, 0, len(partial))
@@ -921,6 +969,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						ResumeValues: []interface{}{nil, errStr, string(partial)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
+							if errStr != "timeout" && sock.gen == gen {
+								sock.closeOnError()
+							}
 						},
 					}
 					return
@@ -1045,19 +1096,10 @@ func golapis_tcp_receiveany(L *C.lua_State) C.int {
 
 		// No data read - handle the error
 		errStr := normalizeNetError(err)
-		isTimeout := strings.Contains(errStr, "timeout")
-
-		if err == io.EOF {
-			errStr = "closed"
-		}
 
 		if debugEnabled {
-			debugLog("tcp.receiveany: id=%d max=%d error=%s isTimeout=%v", sockID, max, errStr, isTimeout)
+			debugLog("tcp.receiveany: id=%d max=%d error=%s", sockID, max, errStr)
 		}
-
-		// Per OpenResty docs: receiveany doesn't auto-close on timeout,
-		// but does auto-close on other connection errors
-		shouldClose := !isTimeout && err != io.EOF
 
 		thread.state.eventChan <- &StateEvent{
 			Type:         EventResumeThread,
@@ -1065,15 +1107,10 @@ func golapis_tcp_receiveany(L *C.lua_State) C.int {
 			ResumeValues: []interface{}{nil, errStr},
 			OnResume: func(event *StateEvent) {
 				sock.reading = false
-				if shouldClose && !sock.closed {
-					if sock.conn != nil {
-						sock.conn.Close()
-					}
-					sock.conn = nil
-					sock.connected = false
-					sock.readBuf = nil
-					sock.readBufPos = 0
-					sock.gen++
+				// Per OpenResty docs: no auto-close on timeout, but
+				// auto-close on any other connection error
+				if errStr != "timeout" && sock.gen == gen {
+					sock.closeOnError()
 				}
 			},
 		}
@@ -1168,10 +1205,17 @@ func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
 	}
 
 	// Parse args: setkeepalive([max_idle_timeout_ms], [pool_size])
+	// Per OpenResty semantics an explicit timeout of 0 means the entry
+	// never expires; omitting the argument uses the 60s default.
 	maxIdleMs := 60000
 	poolSize := 30
 	if C.lua_gettop(L) >= 2 && C.lua_isnumber(L, 2) != 0 {
 		maxIdleMs = int(C.lua_tonumber(L, 2))
+		if maxIdleMs < 0 {
+			C.lua_pushnil(L)
+			pushGoString(L, "bad timeout value")
+			return 2
+		}
 	}
 	if C.lua_gettop(L) >= 3 && C.lua_isnumber(L, 3) != 0 {
 		poolSize = int(C.lua_tonumber(L, 3))

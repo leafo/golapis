@@ -5,7 +5,9 @@ package golapis
 */
 import "C"
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"runtime"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 )
@@ -29,13 +32,36 @@ var socketBufPool = sync.Pool{
 	},
 }
 
-// normalizeNetError converts network errors to OpenResty-compatible error strings.
+// defaultSocketTimeout matches OpenResty's default for the
+// lua_socket_connect/send/read_timeout directives (60s). Sockets are created
+// with this value so a script that never calls settimeout cannot hang an
+// operation (and its goroutine + fd) forever on a dead peer.
+const defaultSocketTimeout = 60 * time.Second
+
+// normalizeNetError converts network errors to OpenResty-compatible error
+// strings: the literals "timeout" and "closed", a "<host> could not be
+// resolved" message for DNS failures, and otherwise the lowercased strerror()
+// text that ngx_lua pushes for socket errnos — which is exactly what Go's
+// syscall.Errno.Error() produces (e.g. "connection refused",
+// "connection reset by peer", "broken pipe").
 func normalizeNetError(err error) string {
 	if err == nil {
 		return ""
 	}
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return "timeout"
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return "closed"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.Name + " could not be resolved"
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno.Error()
 	}
 	return err.Error()
 }
@@ -181,7 +207,7 @@ func appendLuaValue(L *C.lua_State, idx C.int, buf *[]byte, strict bool) (bool, 
 func golapis_socket_udp_new(L *C.lua_State) C.int {
 	thread := getLuaThreadFromRegistry(L)
 	sock := &UDPSocket{
-		timeout:     0,
+		timeout:     defaultSocketTimeout,
 		ownerThread: thread,
 	}
 	id := registerUDPSocket(sock)
@@ -211,8 +237,13 @@ func golapis_udp_settimeout(L *C.lua_State) C.int {
 		return 0
 	}
 
+	// Per OpenResty semantics, zero or negative restores the default timeout
 	ms := float64(C.lua_tonumber(L, 2))
-	sock.timeout = time.Duration(ms) * time.Millisecond
+	if ms <= 0 {
+		sock.timeout = defaultSocketTimeout
+	} else {
+		sock.timeout = time.Duration(ms) * time.Millisecond
+	}
 	return 0 // settimeout returns nothing per OpenResty spec
 }
 
@@ -315,7 +346,7 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 		conn, err := net.DialUnix("unixgram", localAddr, remoteAddr)
 		if err != nil {
 			C.lua_pushnil(L)
-			pushGoString(L, err.Error())
+			pushGoString(L, normalizeNetError(err))
 			return 2
 		}
 		sock.conn = conn
@@ -346,7 +377,7 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 		conn, err := net.DialUDP("udp", localAddr, &net.UDPAddr{IP: ip, Port: port})
 		if err != nil {
 			C.lua_pushnil(L)
-			pushGoString(L, err.Error())
+			pushGoString(L, normalizeNetError(err))
 			return 2
 		}
 		sock.conn = conn
@@ -372,7 +403,7 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
-				ResumeValues: []interface{}{nil, err.Error()},
+				ResumeValues: []interface{}{nil, normalizeNetError(err)},
 			}
 			return
 		}
@@ -440,7 +471,7 @@ func golapis_udp_send(L *C.lua_State) C.int {
 	_, err := sock.conn.Write(data)
 	if err != nil {
 		C.lua_pushnil(L)
-		pushGoString(L, err.Error())
+		pushGoString(L, normalizeNetError(err))
 		return 2
 	}
 

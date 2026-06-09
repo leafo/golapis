@@ -140,8 +140,17 @@ func (e *tcpPoolEntry) watch() {
 	if atomic.LoadInt32(&e.state) != tcpEntryAvailable {
 		return
 	}
-	expiresAt := time.Now().Add(e.idleTimeout)
-	e.conn.SetReadDeadline(expiresAt)
+	// idleTimeout 0 means the entry never expires (setkeepalive(0)). Clear
+	// any deadline left over from the socket's previous use; a reclaim still
+	// wakes the Read below by setting a past deadline.
+	var expiresAt time.Time
+	hasExpiry := e.idleTimeout > 0
+	if hasExpiry {
+		expiresAt = time.Now().Add(e.idleTimeout)
+		e.conn.SetReadDeadline(expiresAt)
+	} else {
+		e.conn.SetReadDeadline(time.Time{})
+	}
 	// Recheck after SetReadDeadline: if a reclaim's deadline-past got
 	// overridden by our SetReadDeadline above, we'll see state=Claimed
 	// here and exit without ever calling Read.
@@ -159,7 +168,8 @@ func (e *tcpPoolEntry) watch() {
 	// to win the CAS afterwards, the connection has aged out and must be
 	// discarded. n>0 or non-timeout errors (EOF, reset, closed) also mean
 	// the connection is unusable.
-	reclaimWake := n == 0 && err != nil && isTimeoutErr(err) && time.Now().Before(expiresAt)
+	reclaimWake := n == 0 && err != nil && isTimeoutErr(err) &&
+		(!hasExpiry || time.Now().Before(expiresAt))
 
 	if !atomic.CompareAndSwapInt32(&e.state, tcpEntryAvailable, tcpEntryClaimed) {
 		// Lost the CAS to a reclaim/eviction/shutdown. If the wake
