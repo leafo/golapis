@@ -2376,15 +2376,56 @@ func golapis_req_read_body(L *C.lua_State) C.int {
 		return 2
 	}
 
-	_, err := thread.request.ReadBody()
-	if err != nil {
+	req := thread.request
+
+	// Already read - return cached result without yielding
+	if req.bodyRead {
+		if req.bodyErr != nil {
+			C.lua_pushnil(L)
+			pushGoString(L, req.bodyErr.Error())
+			return 2
+		}
+		return 0
+	}
+
+	req.bodyRead = true
+
+	if req.Request.Body == nil {
+		return 0
+	}
+
+	// Check Content-Length header first for early rejection
+	if req.maxBodySize > 0 && req.Request.ContentLength > req.maxBodySize {
+		req.Request.Body.Close()
+		req.bodyErr = ErrBodyTooLarge
 		C.lua_pushnil(L)
-		pushGoString(L, err.Error())
+		pushGoString(L, req.bodyErr.Error())
 		return 2
 	}
 
-	// Success - return nothing
-	return 0
+	// Read the body off the event loop so a slow client can't stall the VM,
+	// then resume this coroutine with the result. The request fields are only
+	// written in OnResume, which runs on the event-loop goroutine.
+	body := req.Request.Body
+	maxBodySize := req.maxBodySize
+	go func() {
+		data, err := readBodyLimited(body, maxBodySize)
+		var resumeValues []interface{}
+		if err != nil {
+			resumeValues = []interface{}{nil, err.Error()}
+		}
+		thread.state.eventChan <- &StateEvent{
+			Type:         EventResumeThread,
+			Thread:       thread,
+			ResumeValues: resumeValues,
+			OnResume: func(event *StateEvent) {
+				req.bodyData = data
+				req.bodyErr = err
+			},
+		}
+	}()
+
+	return C.lua_yield_wrapper(L, 0)
 }
 
 //export golapis_req_get_body_data

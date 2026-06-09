@@ -85,54 +85,31 @@ func (r *GolapisRequest) WrapResponseWriter(w http.ResponseWriter) *headerFlushi
 	}
 }
 
-// ReadBody reads and caches the request body. Safe to call multiple times.
-// Returns the cached body data and any error from the initial read.
-// If the body exceeds maxBodySize, returns ErrBodyTooLarge.
-func (r *GolapisRequest) ReadBody() ([]byte, error) {
-	if r.bodyRead {
-		return r.bodyData, r.bodyErr
-	}
-
-	r.bodyRead = true
-	if r.Request.Body == nil {
-		r.bodyData = nil
-		r.bodyErr = nil
-		return nil, nil
-	}
-
-	defer r.Request.Body.Close()
-
-	// Check Content-Length header first for early rejection
-	if r.maxBodySize > 0 && r.Request.ContentLength > r.maxBodySize {
-		r.bodyData = nil
-		r.bodyErr = ErrBodyTooLarge
-		return nil, r.bodyErr
-	}
+// readBodyLimited reads the full request body, enforcing maxBodySize
+// (0 = unlimited) and closing the body when done. It is called from a
+// goroutine off the event loop, so it must not touch GolapisRequest fields;
+// results are stored on the request by the caller's resume handler.
+func readBodyLimited(body io.ReadCloser, maxBodySize int64) ([]byte, error) {
+	defer body.Close()
 
 	// Use LimitedReader to cap the amount we read
-	var reader io.Reader = r.Request.Body
-	if r.maxBodySize > 0 {
+	var reader io.Reader = body
+	if maxBodySize > 0 {
 		// Read up to maxBodySize + 1 to detect overflow
-		reader = io.LimitReader(r.Request.Body, r.maxBodySize+1)
+		reader = io.LimitReader(body, maxBodySize+1)
 	}
 
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		r.bodyData = nil
-		r.bodyErr = err
 		return nil, err
 	}
 
 	// Check if we hit the limit (read more than maxBodySize)
-	if r.maxBodySize > 0 && int64(len(data)) > r.maxBodySize {
-		r.bodyData = nil
-		r.bodyErr = ErrBodyTooLarge
-		return nil, r.bodyErr
+	if maxBodySize > 0 && int64(len(data)) > maxBodySize {
+		return nil, ErrBodyTooLarge
 	}
 
-	r.bodyData = data
-	r.bodyErr = nil
-	return r.bodyData, nil
+	return data, nil
 }
 
 // BodyWasRead returns true if ReadBody has been called

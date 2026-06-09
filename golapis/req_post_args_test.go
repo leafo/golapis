@@ -1,9 +1,11 @@
 package golapis
 
 import (
+	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // runLuaWithHTTPBody runs Lua code with a POST request body
@@ -557,5 +559,70 @@ func TestVarRequestBodyNotRead(t *testing.T) {
 	expected := "body: nil\n"
 	if body != expected {
 		t.Errorf("Unexpected body: %q, want %q", body, expected)
+	}
+}
+
+// TestReadBodyDoesNotBlockVM verifies that read_body yields the coroutine
+// while the body is read off the event loop: a timer scheduled before the
+// read must run while a slow client is still uploading.
+func TestReadBodyDoesNotBlockVM(t *testing.T) {
+	gls := NewGolapisLuaState()
+	if gls == nil {
+		t.Fatal("Failed to create Lua state")
+	}
+	defer gls.Close()
+
+	gls.Start()
+	defer gls.Stop()
+
+	// Simulate a slow client: the body arrives 300ms after the read starts.
+	pr, pw := io.Pipe()
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		pw.Write([]byte("hello"))
+		pw.Close()
+	}()
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/test", pr)
+
+	req := NewGolapisRequest(r)
+	wrappedWriter := req.WrapResponseWriter(w)
+
+	code := `
+		timer_fired = false
+		golapis.timer.at(0.1, function() timer_fired = true end)
+
+		local ok, err = golapis.req.read_body()
+		if err then
+			error("unexpected error: " .. err)
+		end
+		golapis.say("body: ", golapis.req.get_body_data())
+		golapis.say("timer fired: ", tostring(timer_fired))
+	`
+
+	resp := make(chan *StateResponse, 1)
+	gls.eventChan <- &StateEvent{
+		Type:         EventRunString,
+		Code:         code,
+		OutputWriter: wrappedWriter,
+		Request:      req,
+		Response:     resp,
+	}
+
+	result := <-resp
+	gls.Wait()
+	req.FlushHeaders(w)
+
+	if result.Error != nil {
+		t.Fatalf("Lua error: %v", result.Error)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "body: hello") {
+		t.Errorf("expected body to be read, got: %q", body)
+	}
+	if !strings.Contains(body, "timer fired: true") {
+		t.Errorf("expected timer to fire during blocked read_body, got: %q", body)
 	}
 }
