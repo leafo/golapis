@@ -57,6 +57,7 @@ func TestTCPSocketMethods(t *testing.T) {
 		golapis.say("connect=", type(sock.connect))
 		golapis.say("send=", type(sock.send))
 		golapis.say("receive=", type(sock.receive))
+		golapis.say("receiveuntil=", type(sock.receiveuntil))
 		golapis.say("settimeout=", type(sock.settimeout))
 		golapis.say("settimeouts=", type(sock.settimeouts))
 		golapis.say("close=", type(sock.close))
@@ -72,6 +73,7 @@ func TestTCPSocketMethods(t *testing.T) {
 		"connect=function",
 		"send=function",
 		"receive=function",
+		"receiveuntil=function",
 		"settimeout=function",
 		"settimeouts=function",
 		"close=function",

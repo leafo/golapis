@@ -36,6 +36,12 @@ type TCPSocket struct {
 	readBuf    []byte
 	readBufPos int
 
+	// The receiveuntil reader currently withholding partial-pattern-match
+	// bytes from the stream (nil if none). When a different read operation
+	// runs, those bytes are restored to the front of readBuf first; see
+	// restorePendingPattern.
+	activeUntilReader *tcpUntilReader
+
 	// Connection pooling tracking
 	reusedTimes int    // number of times retrieved from pool
 	poolKey     string // pool key set at connect time; used by setkeepalive
@@ -139,6 +145,7 @@ func (sock *TCPSocket) closeOnError() {
 	sock.connected = false
 	sock.readBuf = nil
 	sock.readBufPos = 0
+	sock.activeUntilReader = nil
 	sock.connecting = false
 	sock.reading = false
 	sock.writing = false
@@ -310,6 +317,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 		sock.isUnix = false
 		sock.readBuf = nil
 		sock.readBufPos = 0
+		sock.activeUntilReader = nil
 		sock.gen++
 	}
 
@@ -678,6 +686,9 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 		return 2
 	}
 
+	// Restore any partial-match bytes withheld by a receiveuntil reader
+	sock.restorePendingPattern(nil)
+
 	argCount := C.lua_gettop(L)
 	mode := "line"
 	var size int
@@ -1025,6 +1036,9 @@ func golapis_tcp_receiveany(L *C.lua_State) C.int {
 		return 2
 	}
 
+	// Restore any partial-match bytes withheld by a receiveuntil reader
+	sock.restorePendingPattern(nil)
+
 	// Check if we have buffered data - return immediately if so
 	bufferedLen := len(sock.readBuf) - sock.readBufPos
 	if bufferedLen > 0 {
@@ -1149,6 +1163,7 @@ func golapis_tcp_close(L *C.lua_State) C.int {
 	sock.connected = false
 	sock.readBuf = nil
 	sock.readBufPos = 0
+	sock.activeUntilReader = nil
 	sock.connecting = false
 	sock.reading = false
 	sock.writing = false
@@ -1289,6 +1304,7 @@ func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
 	sock.closed = true
 	sock.readBuf = nil
 	sock.readBufPos = 0
+	sock.activeUntilReader = nil
 	sock.connecting = false
 	sock.reading = false
 	sock.writing = false
@@ -1333,6 +1349,7 @@ func golapis_tcp_gc(L *C.lua_State) C.int {
 		sock.connected = false
 		sock.readBuf = nil
 		sock.readBufPos = 0
+		sock.activeUntilReader = nil
 		sock.connecting = false
 		sock.reading = false
 		sock.writing = false

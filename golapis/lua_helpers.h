@@ -298,4 +298,34 @@ static lua_State* lua_tothread_wrapper(lua_State *L, int idx) {
     return lua_tothread(L, idx);
 }
 
+// --- receiveuntil iterator support ------------------------------------------
+// The iterator returned by tcp:receiveuntil() is a C closure whose upvalues
+// hold the socket userdata and the reader-state userdata. lua_pushcclosure
+// needs a real C function pointer and lua_upvalueindex is a macro, so both
+// live here. A negative return from the Go function means a Lua error message
+// was pushed and must be raised.
+extern int golapis_tcp_receiveuntil_iterator(lua_State *L);
+
+static int golapis_tcp_receiveuntil_iterator_cfunc(lua_State *L) {
+    int result = golapis_tcp_receiveuntil_iterator(L);
+    // -2 signals a pushed Lua error message to raise. The usual
+    // negative-means-error convention can't be used here because the
+    // iterator yields, and lua_yield's return value (which the C function
+    // must pass through to the VM) is -1.
+    if (result == -2) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+// Pushes the iterator closure, capturing the top nups stack values as its
+// upvalues (lua_pushcclosure pops them).
+static void golapis_push_receiveuntil_iterator(lua_State *L, int nups) {
+    lua_pushcclosure(L, golapis_tcp_receiveuntil_iterator_cfunc, nups);
+}
+
+static int lua_upvalueindex_wrapper(int i) {
+    return lua_upvalueindex(i);
+}
+
 #endif

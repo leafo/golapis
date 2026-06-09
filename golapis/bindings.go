@@ -68,6 +68,8 @@ extern int golapis_tcp_close(lua_State *L);
 extern int golapis_tcp_setkeepalive(lua_State *L);
 extern int golapis_tcp_getreusedtimes(lua_State *L);
 extern int golapis_tcp_gc(lua_State *L);
+extern int golapis_tcp_receiveuntil(lua_State *L);
+extern int golapis_tcp_until_reader_gc(lua_State *L);
 
 // Location capture (internal subrequest)
 extern int golapis_location_capture(lua_State *L);
@@ -468,6 +470,26 @@ static int c_tcp_gc_wrapper(lua_State *L) {
     return golapis_tcp_gc(L);
 }
 
+static int c_tcp_receiveuntil_wrapper(lua_State *L) {
+    int result = golapis_tcp_receiveuntil(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_tcp_until_reader_gc_wrapper(lua_State *L) {
+    return golapis_tcp_until_reader_gc(L);
+}
+
+// Initialize the metatable for receiveuntil reader-state userdata (GC only)
+static void init_tcp_until_reader_metatable(lua_State *L) {
+    luaL_newmetatable(L, "golapis.socket.tcp.reader");
+    lua_pushcfunction(L, c_tcp_until_reader_gc_wrapper);
+    lua_setfield(L, -2, "__gc");
+    lua_pop(L, 1);
+}
+
 static int c_get_phase_wrapper(lua_State *L) {
     return golapis_get_phase(L);
 }
@@ -592,6 +614,8 @@ static void init_tcp_socket_metatable(lua_State *L) {
     lua_setfield(L, -2, "receive");
     lua_pushcfunction(L, c_tcp_receiveany_wrapper);
     lua_setfield(L, -2, "receiveany");
+    lua_pushcfunction(L, c_tcp_receiveuntil_wrapper);
+    lua_setfield(L, -2, "receiveuntil");
     lua_pushcfunction(L, c_tcp_settimeout_wrapper);
     lua_setfield(L, -2, "settimeout");
     lua_pushcfunction(L, c_tcp_settimeouts_wrapper);
@@ -873,6 +897,7 @@ static int setup_golapis_global(lua_State *L) {
     init_main_metatable(L);
     init_udp_socket_metatable(L);
     init_tcp_socket_metatable(L);
+    init_tcp_until_reader_metatable(L);
     init_shdict_metatable(L);
 
     // Apply metatable to golapis table (for status magic key)
