@@ -1435,6 +1435,10 @@ func TestTCPSocketPoolEvictionStress(t *testing.T) {
 }
 
 func TestTCPSocketPoolUnixSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets not supported on windows")
+	}
+
 	dir := t.TempDir()
 	sockPath := filepath.Join(dir, "pool.sock")
 
@@ -1752,6 +1756,13 @@ func startCountingTCPServer(t *testing.T) (*net.TCPAddr, func() int32, func()) {
 // backpressure yields the coroutine instead of stalling the event loop:
 // a timer scheduled before the send must run while the send is in flight.
 func TestTCPSocketSendDoesNotBlockVM(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows AFD buffers loopback sends far beyond SO_SNDBUF, so the
+		// 64MB payload completes immediately instead of blocking on
+		// backpressure and the timeout never triggers.
+		t.Skip("cannot induce send backpressure over loopback on windows")
+	}
+
 	// Server accepts the connection but never reads, so a large enough
 	// send fills the kernel buffers and blocks until the write timeout.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

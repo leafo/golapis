@@ -61,9 +61,37 @@ func normalizeNetError(err error) string {
 	}
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
+		if s, ok := winsockErrorString(errno); ok {
+			return s
+		}
 		return errno.Error()
 	}
 	return err.Error()
+}
+
+// winsockErrorString maps Windows WSA error codes to the POSIX strerror()
+// text that ngx_lua produces, since Errno.Error() on Windows returns long
+// human-readable messages (e.g. "No connection could be made because the
+// target machine actively refused it."). The WSA codes (10000+) don't
+// collide with POSIX errno values, so the numeric check is safe to compile
+// on all platforms.
+func winsockErrorString(errno syscall.Errno) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", false
+	}
+	switch uintptr(errno) {
+	case 10051: // WSAENETUNREACH
+		return "network is unreachable", true
+	case 10053: // WSAECONNABORTED
+		return "software caused connection abort", true
+	case 10054: // WSAECONNRESET
+		return "connection reset by peer", true
+	case 10061: // WSAECONNREFUSED
+		return "connection refused", true
+	case 10065: // WSAEHOSTUNREACH
+		return "no route to host", true
+	}
+	return "", false
 }
 
 // =============================================================================
