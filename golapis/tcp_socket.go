@@ -517,16 +517,18 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 		return 2
 	}
 
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "send: could not find thread context")
+		return 2
+	}
+
 	if C.lua_gettop(L) < 2 {
 		C.lua_pushnil(L)
 		pushGoString(L, "send requires data argument")
 		return 2
 	}
-
-	sock.writing = true
-	defer func() {
-		sock.writing = false
-	}()
 
 	var data []byte
 	ok, errMsg := appendLuaValue(L, 2, &data, false)
@@ -536,28 +538,61 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 		return 2
 	}
 
-	// Set write deadline if timeout is set
-	if sock.writeTimeout > 0 {
-		sock.conn.SetWriteDeadline(time.Now().Add(sock.writeTimeout))
-	} else {
-		sock.conn.SetWriteDeadline(time.Time{})
+	if len(data) == 0 {
+		C.lua_pushinteger(L, 0)
+		return 1
 	}
 
-	n, err := sock.conn.Write(data)
-	if err != nil {
-		if debugEnabled {
-			debugLog("tcp.send: id=%d bytes=%d error=%s", sockID, len(data), normalizeNetError(err))
-		}
-		C.lua_pushnil(L)
-		pushGoString(L, normalizeNetError(err))
-		return 2
-	}
+	// Capture values for goroutine; data was copied out of the Lua string by
+	// appendLuaValue so it stays valid after the coroutine yields.
+	timeout := sock.writeTimeout
+	conn := sock.conn
+	gen := sock.gen
 
 	if debugEnabled {
-		debugLog("tcp.send: id=%d bytes=%d sent=%d", sockID, len(data), n)
+		debugLog("tcp.send: id=%d bytes=%d timeout=%v", sockID, len(data), timeout)
 	}
-	C.lua_pushinteger(L, C.lua_Integer(n))
-	return 1
+	sock.writing = true
+	go func() {
+		if timeout > 0 {
+			conn.SetWriteDeadline(time.Now().Add(timeout))
+		} else {
+			conn.SetWriteDeadline(time.Time{})
+		}
+
+		n, err := conn.Write(data)
+		if err != nil {
+			if debugEnabled {
+				debugLog("tcp.send: id=%d bytes=%d error=%s", sockID, len(data), normalizeNetError(err))
+			}
+			thread.state.eventChan <- &StateEvent{
+				Type:         EventResumeThread,
+				Thread:       thread,
+				ResumeValues: []interface{}{nil, normalizeNetError(err)},
+				OnResume: func(event *StateEvent) {
+					sock.writing = false
+				},
+			}
+			return
+		}
+
+		if debugEnabled {
+			debugLog("tcp.send: id=%d bytes=%d sent=%d", sockID, len(data), n)
+		}
+		thread.state.eventChan <- &StateEvent{
+			Type:         EventResumeThread,
+			Thread:       thread,
+			ResumeValues: []interface{}{n},
+			OnResume: func(event *StateEvent) {
+				sock.writing = false
+				if sock.closed || sock.gen != gen {
+					event.ResumeValues = []interface{}{nil, "closed"}
+				}
+			},
+		}
+	}()
+
+	return C.lua_yield_wrapper(L, 0)
 }
 
 //export golapis_tcp_receive

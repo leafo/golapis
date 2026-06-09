@@ -1746,3 +1746,63 @@ func startCountingTCPServer(t *testing.T) (*net.TCPAddr, func() int32, func()) {
 	cleanup := func() { listener.Close() }
 	return serverAddr, accepts, cleanup
 }
+
+// TestTCPSocketSendDoesNotBlockVM verifies that a send blocked on TCP
+// backpressure yields the coroutine instead of stalling the event loop:
+// a timer scheduled before the send must run while the send is in flight.
+func TestTCPSocketSendDoesNotBlockVM(t *testing.T) {
+	// Server accepts the connection but never reads, so a large enough
+	// send fills the kernel buffers and blocks until the write timeout.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	defer listener.Close()
+	serverAddr := listener.Addr().(*net.TCPAddr)
+
+	connCh := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		connCh <- conn
+	}()
+	defer func() {
+		select {
+		case conn := <-connCh:
+			conn.Close()
+		default:
+		}
+	}()
+
+	code := `
+		timer_fired = false
+		golapis.timer.at(0.2, function() timer_fired = true end)
+
+		local sock = golapis.socket.tcp()
+		sock:settimeouts(1000, 500, 1000)
+		local ok, err = sock:connect("` + serverAddr.IP.String() + `", ` + itoa(serverAddr.Port) + `)
+		if not ok then
+			golapis.say("connect error: ", err)
+			return
+		end
+
+		local payload = ("x"):rep(64 * 1024 * 1024)
+		local bytes, serr = sock:send(payload)
+		golapis.say("send: ", tostring(bytes), " ", tostring(serr))
+		golapis.say("timer fired: ", tostring(timer_fired))
+		sock:close()
+	`
+
+	output, err := runTCPTest(t, code)
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(output, "send: nil timeout") {
+		t.Errorf("expected send to fail with 'timeout', got: %q", output)
+	}
+	if !strings.Contains(output, "timer fired: true") {
+		t.Errorf("expected timer to fire during blocked send, got: %q", output)
+	}
+}
