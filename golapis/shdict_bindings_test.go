@@ -10,7 +10,7 @@ import (
 // once with names unlikely to collide with other tests.
 var shdictBindingsTestSetup sync.Once
 
-func runShdictLua(t *testing.T, code string) error {
+func ensureShdictTestDicts(t *testing.T) {
 	t.Helper()
 
 	shdictBindingsTestSetup.Do(func() {
@@ -21,6 +21,25 @@ func runShdictLua(t *testing.T, code string) error {
 			t.Fatalf("register bind_tiny: %v", err)
 		}
 	})
+}
+
+// shdictTestDict returns a registered test dict for direct Go-side access.
+func shdictTestDict(t *testing.T, name string) *SharedDict {
+	t.Helper()
+	ensureShdictTestDicts(t)
+
+	sharedDictsMu.RLock()
+	d := sharedDictsByName[name]
+	sharedDictsMu.RUnlock()
+	if d == nil {
+		t.Fatalf("test dict %q not registered", name)
+	}
+	return d
+}
+
+func runShdictLua(t *testing.T, code string) error {
+	t.Helper()
+	ensureShdictTestDicts(t)
 
 	// shared assert helper prepended to every test chunk
 	_, err := runLuaAndCapture(t, `
