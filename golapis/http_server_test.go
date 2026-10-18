@@ -150,3 +150,66 @@ func TestLogHTTPRequestsWaitGroupTracksActiveRequest(t *testing.T) {
 		t.Fatal("request WaitGroup did not complete after handler returned")
 	}
 }
+
+func TestParseHumanDuration(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Duration
+		err  bool
+	}{
+		{"30", 30 * time.Second, false},
+		{"0", 0, false},
+		{"500ms", 500 * time.Millisecond, false},
+		{"45s", 45 * time.Second, false},
+		{"5m", 5 * time.Minute, false},
+		{"2h", 2 * time.Hour, false},
+		{"1d", 24 * time.Hour, false},
+		{" 10s ", 10 * time.Second, false},
+		{"", 0, true},
+		{"s", 0, true},
+		{"abc", 0, true},
+		{"-5s", 0, true},
+		{"1.5s", 0, true},
+		{"1m30s", 0, true},
+		{"5M", 0, true},
+		{"10us", 0, true},
+		{"+5s", 0, true},
+		{"9223372036854775807s", 0, true}, // overflow
+	}
+	for _, c := range cases {
+		got, err := ParseHumanDuration(c.in)
+		if c.err {
+			if err == nil {
+				t.Errorf("ParseHumanDuration(%q) = %v, want error", c.in, got)
+			}
+		} else if err != nil || got != c.want {
+			t.Errorf("ParseHumanDuration(%q) = %v, %v; want %v", c.in, got, err, c.want)
+		}
+	}
+}
+
+func TestNormalizeHTTPServerConfigKeepsNoTimeout(t *testing.T) {
+	config := normalizeHTTPServerConfig(&HTTPServerConfig{
+		ReadHeaderTimeout: NoTimeout,
+		WriteTimeout:      NoTimeout,
+	})
+
+	if config.ReadHeaderTimeout != NoTimeout || config.WriteTimeout != NoTimeout {
+		t.Fatalf("NoTimeout was replaced: %+v", config)
+	}
+	if config.ReadTimeout != DefaultReadTimeout {
+		t.Fatalf("ReadTimeout = %v, want default", config.ReadTimeout)
+	}
+	if again := normalizeHTTPServerConfig(config); again.WriteTimeout != NoTimeout {
+		t.Fatal("second normalize replaced NoTimeout")
+	}
+}
+
+func TestServerReadHeaderTimeoutDisable(t *testing.T) {
+	if got := serverReadHeaderTimeout(NoTimeout); got != 0 {
+		t.Fatalf("serverReadHeaderTimeout(NoTimeout) = %v, want 0", got)
+	}
+	if got := serverReadHeaderTimeout(5 * time.Second); got != 5*time.Second {
+		t.Fatalf("serverReadHeaderTimeout(5s) = %v", got)
+	}
+}

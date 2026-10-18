@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"golapis/golapis"
 )
@@ -30,6 +31,52 @@ func (f *sharedDictFlags) Set(value string) error {
 	return nil
 }
 
+// durationFlag holds a ParseHumanDuration value, tracking whether it was given
+// so unset flags keep the server defaults
+type durationFlag struct {
+	value time.Duration
+	set   bool
+}
+
+func (f *durationFlag) String() string {
+	if !f.set {
+		return ""
+	}
+	return f.value.String()
+}
+
+func (f *durationFlag) Set(s string) error {
+	d, err := golapis.ParseHumanDuration(s)
+	if err != nil {
+		return err
+	}
+	f.value, f.set = d, true
+	return nil
+}
+
+func (f *durationFlag) apply(dst *time.Duration) {
+	if !f.set {
+		return
+	}
+	if f.value == 0 {
+		*dst = golapis.NoTimeout
+	} else {
+		*dst = f.value
+	}
+}
+
+type httpTimeoutFlags struct {
+	readHeader, read, write, idle, shutdown durationFlag
+}
+
+func (t *httpTimeoutFlags) apply(config *golapis.HTTPServerConfig) {
+	t.readHeader.apply(&config.ReadHeaderTimeout)
+	t.read.apply(&config.ReadTimeout)
+	t.write.apply(&config.WriteTimeout)
+	t.idle.apply(&config.IdleTimeout)
+	t.shutdown.apply(&config.ShutdownTimeout)
+}
+
 var (
 	version   = "dev"
 	gitCommit = "unknown"
@@ -48,6 +95,12 @@ func main() {
 	flag.Var(&fileServers, "file-server", "Serve static files: LOCAL_PATH:URL_PREFIX (can be repeated)")
 	var sharedDicts sharedDictFlags
 	flag.Var(&sharedDicts, "shared-dict", "Declare a shared dictionary: NAME:SIZE (e.g. cache:10m, can be repeated)")
+	var timeouts httpTimeoutFlags
+	flag.Var(&timeouts.readHeader, "http-read-header-timeout", "Max time to read request headers, 0 to disable (default "+formatSeconds(golapis.DefaultReadHeaderTimeout)+")")
+	flag.Var(&timeouts.read, "http-read-timeout", "Max time to read the full request, 0 to disable (default "+formatSeconds(golapis.DefaultReadTimeout)+")")
+	flag.Var(&timeouts.write, "http-write-timeout", "Max time from end of request headers to end of response, 0 to disable (default "+formatSeconds(golapis.DefaultWriteTimeout)+")")
+	flag.Var(&timeouts.idle, "http-idle-timeout", "Max keep-alive idle time, 0 to disable (default "+formatSeconds(golapis.DefaultIdleTimeout)+")")
+	flag.Var(&timeouts.shutdown, "http-shutdown-timeout", "Max time to wait for requests on graceful shutdown, 0 to disable (default "+formatSeconds(golapis.DefaultShutdownTimeout)+")")
 	flag.Parse()
 
 	if *versionFlag || *vFlag {
@@ -75,6 +128,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  --ngx    alias golapis table to global ngx")
 		fmt.Fprintln(os.Stderr, "  --file-server PATH[:URL] serve static files (can be repeated)")
 		fmt.Fprintln(os.Stderr, "  --shared-dict NAME:SIZE  declare a shared dictionary (can be repeated)")
+		fmt.Fprintf(os.Stderr, "  --http-read-header-timeout TIME  (default %s)\n", formatSeconds(golapis.DefaultReadHeaderTimeout))
+		fmt.Fprintf(os.Stderr, "  --http-read-timeout TIME         (default %s)\n", formatSeconds(golapis.DefaultReadTimeout))
+		fmt.Fprintf(os.Stderr, "  --http-write-timeout TIME        (default %s)\n", formatSeconds(golapis.DefaultWriteTimeout))
+		fmt.Fprintf(os.Stderr, "  --http-idle-timeout TIME         (default %s)\n", formatSeconds(golapis.DefaultIdleTimeout))
+		fmt.Fprintf(os.Stderr, "  --http-shutdown-timeout TIME     (default %s)\n", formatSeconds(golapis.DefaultShutdownTimeout))
+		fmt.Fprintln(os.Stderr, "      TIME is N[ms|s|m|h|d], bare N is seconds, 0 disables")
 		os.Exit(1)
 	}
 
@@ -103,10 +162,18 @@ func main() {
 			fmt.Fprintln(os.Stderr, "HTTP mode requires a script file or -e code")
 			os.Exit(1)
 		}
-		startHTTPServer(entry, *portFlag, *ngxFlag, fileServers)
+		startHTTPServer(entry, *portFlag, *ngxFlag, fileServers, &timeouts)
 	} else {
 		runSingleExecution(filename, scriptArgs, *lFlag, *eFlag, *ngxFlag)
 	}
+}
+
+// formatSeconds prints d in the --http-*-timeout input format rather than Go's
+func formatSeconds(d time.Duration) string {
+	if d%time.Second != 0 {
+		return fmt.Sprintf("%dms", int64(d/time.Millisecond))
+	}
+	return fmt.Sprintf("%ds", int64(d/time.Second))
 }
 
 // registerSharedDictFlag parses a NAME:SIZE flag value and registers the dict
@@ -187,9 +254,10 @@ func runSingleExecution(filename string, scriptArgs []string, requireLib string,
 	lua.Wait()
 }
 
-func startHTTPServer(entry golapis.EntryPoint, port string, ngxAlias bool, fileServers []string) {
+func startHTTPServer(entry golapis.EntryPoint, port string, ngxAlias bool, fileServers []string, timeouts *httpTimeoutFlags) {
 	config := golapis.DefaultHTTPServerConfig()
 	config.NgxAlias = ngxAlias
+	timeouts.apply(config)
 
 	// Parse file server mappings
 	for _, fs := range fileServers {

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,6 +30,10 @@ const (
 	DefaultMaxHeaderBytes    = 1 << 20
 )
 
+// NoTimeout disables a timeout in HTTPServerConfig, where 0 means "use the
+// default".
+const NoTimeout time.Duration = -1
+
 // FileServerMapping maps a local directory to a URL prefix for static file serving
 type FileServerMapping struct {
 	LocalPath string // local filesystem path (e.g., "./static")
@@ -39,11 +45,11 @@ type HTTPServerConfig struct {
 	ClientMaxBodySize int64               // max request body size in bytes (0 = unlimited)
 	NgxAlias          bool                // alias golapis table to global ngx
 	FileServers       []FileServerMapping // static file server mappings
-	ReadHeaderTimeout time.Duration       // max time to read request headers
-	ReadTimeout       time.Duration       // max time to read the full request
-	WriteTimeout      time.Duration       // max time to write the response
-	IdleTimeout       time.Duration       // max keep-alive idle time
-	ShutdownTimeout   time.Duration       // max graceful shutdown wait
+	ReadHeaderTimeout time.Duration       // max time to read request headers (NoTimeout to disable)
+	ReadTimeout       time.Duration       // max time to read the full request (NoTimeout to disable)
+	WriteTimeout      time.Duration       // max time to write the response (NoTimeout to disable)
+	IdleTimeout       time.Duration       // max keep-alive idle time (NoTimeout to disable)
+	ShutdownTimeout   time.Duration       // max graceful shutdown wait (NoTimeout to disable)
 	MaxHeaderBytes    int                 // max request header size
 	TrustProxyHeaders bool                // trust X-Forwarded-For for request logs
 }
@@ -87,6 +93,54 @@ func normalizeHTTPServerConfig(config *HTTPServerConfig) *HTTPServerConfig {
 		normalized.MaxHeaderBytes = defaults.MaxHeaderBytes
 	}
 	return &normalized
+}
+
+// ParseHumanDuration parses a non-negative integer duration with an optional
+// ms/s/m/h/d suffix, nginx style. A bare number is seconds, e.g. "30", "500ms",
+// "5m", "1d".
+func ParseHumanDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+
+	unit := time.Second
+	num := s
+	switch {
+	case strings.HasSuffix(s, "ms"):
+		unit, num = time.Millisecond, s[:len(s)-2]
+	case strings.HasSuffix(s, "s"):
+		unit, num = time.Second, s[:len(s)-1]
+	case strings.HasSuffix(s, "m"):
+		unit, num = time.Minute, s[:len(s)-1]
+	case strings.HasSuffix(s, "h"):
+		unit, num = time.Hour, s[:len(s)-1]
+	case strings.HasSuffix(s, "d"):
+		unit, num = 24*time.Hour, s[:len(s)-1]
+	}
+
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || num[0] < '0' || num[0] > '9' {
+		return 0, fmt.Errorf("invalid duration %q", s)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("duration must not be negative, got %q", s)
+	}
+	if n > math.MaxInt64/int64(unit) {
+		return 0, fmt.Errorf("duration %q is too large", s)
+	}
+	return time.Duration(n) * unit, nil
+}
+
+// http.Server treats a negative timeout as disabled, but a zero
+// ReadHeaderTimeout falls back to ReadTimeout. Without that fallback, disabling
+// the header timeout would leave headers unbounded even with ReadTimeout set,
+// since http.Server only applies ReadTimeout once headers are read.
+func serverReadHeaderTimeout(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // HTTPHandler returns an http.Handler that executes the loaded entrypoint for each request.
@@ -170,7 +224,7 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 	server := &http.Server{
 		Addr:              ":" + port,
 		Handler:           logHTTPRequests(mux, config.TrustProxyHeaders, &requestWg),
-		ReadHeaderTimeout: config.ReadHeaderTimeout,
+		ReadHeaderTimeout: serverReadHeaderTimeout(config.ReadHeaderTimeout),
 		ReadTimeout:       config.ReadTimeout,
 		WriteTimeout:      config.WriteTimeout,
 		IdleTimeout:       config.IdleTimeout,
@@ -212,8 +266,12 @@ func setupGracefulShutdown(server *http.Server, timeout time.Duration) (<-chan s
 		signal.Stop(c)
 		close(shutdownStarted)
 		fmt.Println("\nShutting down gracefully...")
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
+		ctx := context.Background()
+		if timeout >= 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
 		shutdownDone <- server.Shutdown(ctx)
 	}()
 

@@ -28,6 +28,12 @@ Options:
   --ngx    alias golapis table to global ngx
   --file-server PATH[:URL] serve static files (can be repeated)
   --shared-dict NAME:SIZE  declare a shared dictionary (can be repeated)
+  --http-read-header-timeout TIME  (default 5s)
+  --http-read-timeout TIME         (default 30s)
+  --http-write-timeout TIME        (default 30s)
+  --http-idle-timeout TIME         (default 120s)
+  --http-shutdown-timeout TIME     (default 10s)
+      TIME is N[ms|s|m|h|d], bare N is seconds, 0 disables
 ```
 
 ### Running Scripts
@@ -63,6 +69,25 @@ golapis --http -e 'golapis.say("Hello, " .. golapis.var.remote_addr)'
 
 In HTTP mode, the script has access to request-specific APIs like `golapis.var`,
 `golapis.req`, `golapis.header`, and `golapis.status`.
+
+### Server Timeouts
+
+The `--http-*-timeout` flags take an integer with an optional `ms`, `s`, `m`,
+`h`, or `d` suffix (a bare number is seconds). `0` disables the timeout.
+
+- `--http-read-header-timeout`: time allowed to read the request headers
+- `--http-read-timeout`: time allowed to read the whole request, body included
+- `--http-write-timeout`: time from the end of the request headers to the end
+  of the response. This covers the Lua handler, so long-polling or slow
+  streaming handlers need it raised or disabled
+- `--http-idle-timeout`: how long a keep-alive connection waits for the next
+  request
+- `--http-shutdown-timeout`: how long a graceful shutdown (SIGINT/SIGTERM)
+  waits for in-flight requests
+
+```bash
+golapis --http --http-write-timeout 0 --http-idle-timeout 5m app.lua
+```
 
 ### nginx Compatibility (--ngx)
 
