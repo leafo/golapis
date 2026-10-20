@@ -192,15 +192,18 @@ func TestCoroutineYieldReceivesResumeArgs(t *testing.T) {
 	}
 }
 
-func TestCoroutineYieldFromEntryCoroutineFails(t *testing.T) {
-	_, _, err := runLuaWithHTTP(t, `
-		coroutine.yield()
+func TestCoroutineYieldFromEntryCoroutineIsSchedulerYield(t *testing.T) {
+	// As in ngx_lua, yield() from the entry coroutine lets other light
+	// threads run and then returns; it is not an error
+	w, _, err := runLuaWithHTTP(t, `
+		local a, b = coroutine.yield("ignored")
+		golapis.say("after yield ", tostring(a), " ", tostring(b))
 	`)
-	if err == nil {
-		t.Error("Expected error when yielding from entry coroutine")
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "yield") {
-		t.Errorf("Error should mention yield: %v", err)
+	if got := w.Body.String(); got != "after yield nil nil\n" {
+		t.Errorf("body = %q", got)
 	}
 }
 

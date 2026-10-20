@@ -145,6 +145,13 @@ func checkTCPSocketBusy(L *C.lua_State, sock *TCPSocket, checkConnect, checkRead
 // "closed" state (subsequent operations return nil, "closed") so the dead
 // connection can't be pooled via setkeepalive. Must run on the event-loop
 // goroutine (i.e. from an OnResume callback).
+// cancelPendingIO abandons an in-flight operation by closing the socket; the
+// operation's goroutine then fails and its (stale) completion is discarded.
+// A pending connect has no conn yet; its result is dropped on arrival.
+func (sock *TCPSocket) cancelPendingIO() {
+	sock.closeOnError()
+}
+
 func (sock *TCPSocket) closeOnError() {
 	if sock.closed || sock.conn == nil {
 		return
@@ -400,6 +407,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			debugLog("tcp.connect: id=%d unix=%s timeout=%v", sockID, path, timeout)
 		}
 		sock.connecting = true
+		issuingCo.pendingIO = sock
 		go func() {
 			var conn net.Conn
 			var err error
@@ -503,6 +511,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 		debugLog("tcp.connect: id=%d addr=%s timeout=%v", sockID, addr, timeout)
 	}
 	sock.connecting = true
+	issuingCo.pendingIO = sock
 	go func() {
 		var conn net.Conn
 		var err error
@@ -620,6 +629,7 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 		debugLog("tcp.send: id=%d bytes=%d timeout=%v", sockID, len(data), timeout)
 	}
 	sock.writing = true
+	issuingCo.pendingIO = sock
 	go func() {
 		if timeout > 0 {
 			conn.SetWriteDeadline(time.Now().Add(timeout))
@@ -791,6 +801,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 		}
 	}
 	sock.reading = true
+	issuingCo.pendingIO = sock
 	switch mode {
 	case "size":
 		go func() {
@@ -1102,6 +1113,7 @@ func golapis_tcp_receiveany(L *C.lua_State) C.int {
 	}
 
 	sock.reading = true
+	issuingCo.pendingIO = sock
 	go func() {
 		// Allocate buffer up to max size
 		buf := make([]byte, max)

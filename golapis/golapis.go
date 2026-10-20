@@ -551,6 +551,7 @@ func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse
 	}
 
 	coctx.asyncPending = false
+	coctx.pendingIO = nil
 	thread.curCo = coctx
 
 	if err := thread.resume(event.ResumeValues); err != nil {

@@ -369,6 +369,7 @@ func golapis_tcp_receiveuntil_iterator(L *C.lua_State) C.int {
 	sized := size > 0
 
 	sock.reading = true
+	issuingCo.pendingIO = sock
 	go func() {
 		buf := socketBufPool.Get().([]byte)
 		defer socketBufPool.Put(buf)

@@ -50,6 +50,9 @@ extern int golapis_coroutine_resume(lua_State *L);
 extern int golapis_coroutine_yield(lua_State *L);
 extern int golapis_coroutine_status(lua_State *L);
 extern int golapis_coroutine_running(lua_State *L);
+extern int golapis_thread_spawn(lua_State *L);
+extern int golapis_thread_wait(lua_State *L);
+extern int golapis_thread_kill(lua_State *L);
 
 // UDP socket functions
 extern int golapis_socket_udp_new(lua_State *L);
@@ -323,6 +326,10 @@ static int c_coroutine_yield_wrapper(lua_State *L) {
     if (result == -2) {
         return lua_yield(L, lua_gettop(L));
     }
+    if (result == -3) {
+        // scheduler yield from a light/entry thread: values are discarded
+        return lua_yield(L, 0);
+    }
     if (result < 0) {
         return luaL_error(L, "%s", lua_tostring(L, -1));
     }
@@ -339,6 +346,38 @@ static int c_coroutine_status_wrapper(lua_State *L) {
 
 static int c_coroutine_running_wrapper(lua_State *L) {
     return golapis_coroutine_running(L);
+}
+
+// thread.spawn yields the new thread object (1 value) so the spawner can be
+// posted and the child run first
+static int c_thread_spawn_wrapper(lua_State *L) {
+    int result = golapis_thread_spawn(L);
+    if (result == -2) {
+        return lua_yield(L, 1);
+    }
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_thread_wait_wrapper(lua_State *L) {
+    int result = golapis_thread_wait(L);
+    if (result == -3) {
+        return lua_yield(L, 0);
+    }
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_thread_kill_wrapper(lua_State *L) {
+    int result = golapis_thread_kill(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
 }
 
 static void setup_coroutine_module(lua_State *L) {
@@ -893,6 +932,16 @@ static int setup_golapis_global(lua_State *L) {
     lua_pushcfunction(L, c_timer_running_count_wrapper);
     lua_setfield(L, -2, "running_count");
     lua_setfield(L, -2, "timer");       // Add timer table to `golapis`
+
+    // Create thread table (light threads)
+    lua_newtable(L);
+    lua_pushcfunction(L, c_thread_spawn_wrapper);
+    lua_setfield(L, -2, "spawn");
+    lua_pushcfunction(L, c_thread_wait_wrapper);
+    lua_setfield(L, -2, "wait");
+    lua_pushcfunction(L, c_thread_kill_wrapper);
+    lua_setfield(L, -2, "kill");
+    lua_setfield(L, -2, "thread");      // Add thread table to `golapis`
 
     // Create debug table
     lua_newtable(L);
@@ -1525,15 +1574,30 @@ func golapis_coroutine_resume(L *C.lua_State) C.int {
 	}
 
 	coctx := thread.getCoCtx(co)
-	if coctx == nil || coctx.status == coDead {
+	if coctx == nil || coctx.status == coDead || coctx.status == coZombie {
 		C.lua_pushboolean(L, 0)
 		pushGoString(L, "cannot resume dead coroutine")
+		return 2
+	}
+	if coctx.isLight {
+		C.lua_pushboolean(L, 0)
+		pushGoString(L, "attempt to resume a light thread")
 		return 2
 	}
 	if coctx.status != coSuspended {
 		C.lua_pushboolean(L, 0)
 		pushGoString(L, "cannot resume running coroutine")
 		return 2
+	}
+	// Parked on an async op (reachable from a light thread): its completion
+	// must be the thing that resumes it
+	if coctx.asyncPending {
+		C.lua_pushboolean(L, 0)
+		pushGoString(L, "cannot resume non-suspended coroutine")
+		return 2
+	}
+	if !checkYieldable(L) {
+		return -1
 	}
 
 	parent := thread.curCo
@@ -1564,9 +1628,19 @@ func golapis_coroutine_yield(L *C.lua_State) C.int {
 		return -1
 	}
 
-	if thread.entryCo != nil && thread.entryCo.co == L {
-		pushGoString(L, "attempt to yield from outside a coroutine")
+	if !checkYieldable(L) {
 		return -1
+	}
+
+	// From the entry coroutine or a light thread, yield() is a scheduler
+	// yield: other posted threads get to run, then this one continues
+	coctx := thread.getCoCtx(L)
+	if coctx != nil && (coctx == thread.entryCo || coctx.isLight) {
+		if debugEnabled {
+			debugLog("coroutine.yield: scheduler yield co=%p", L)
+		}
+		thread.coOp = coOpSchedYield
+		return -3
 	}
 
 	if debugEnabled {
@@ -1609,6 +1683,8 @@ func golapis_coroutine_status(L *C.lua_State) C.int {
 		pushGoString(L, "suspended")
 	case coNormal:
 		pushGoString(L, "normal")
+	case coZombie:
+		pushGoString(L, "zombie")
 	default:
 		pushGoString(L, "dead")
 	}
@@ -2917,6 +2993,19 @@ func (gls *GolapisLuaState) runBootstrap() error {
 
 // pushGoString pushes a Go string to the Lua stack without allocating a C string.
 // Uses lua_pushlstring with direct pointer access for better performance (~70ns savings).
+// checkYieldable reports whether the coroutine can yield from here. A yield
+// across a C-call boundary (e.g. inside a string.gsub callback) raises
+// instead, so bindings that set scheduler state before yielding must check
+// first or the state would outlive the failed yield. On failure the error
+// message is pushed.
+func checkYieldable(L *C.lua_State) bool {
+	if C.lua_isyieldable(L) != 0 {
+		return true
+	}
+	pushGoString(L, "attempt to yield across C-call boundary")
+	return false
+}
+
 func pushGoString(L *C.lua_State, s string) {
 	if len(s) == 0 {
 		C.lua_pushlstring(L, nil, 0)

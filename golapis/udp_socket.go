@@ -110,6 +110,19 @@ type UDPSocket struct {
 	ownerThread *LuaThread    // thread context that created this socket (for request affinity)
 }
 
+// cancelPendingIO abandons an in-flight receive by closing the socket; see
+// TCPSocket.cancelPendingIO
+func (sock *UDPSocket) cancelPendingIO() {
+	if sock.closed || sock.conn == nil {
+		return
+	}
+	sock.conn.Close()
+	sock.conn = nil
+	sock.closed = true
+	sock.connected = false
+	sock.gen++
+}
+
 // UDP socket registry - maps socket ID to Go object
 var (
 	udpSocketMap       = make(map[uint64]*UDPSocket)
@@ -556,6 +569,7 @@ func golapis_udp_receive(L *C.lua_State) C.int {
 	// Capture values for goroutine
 	timeout := sock.timeout
 	conn := sock.conn
+	issuingCo.pendingIO = sock
 
 	go func() {
 		buf := socketBufPool.Get().([]byte)

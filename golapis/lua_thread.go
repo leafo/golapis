@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"unsafe"
 )
@@ -80,7 +81,13 @@ const (
 	coSuspended
 	coNormal
 	coDead
+	coZombie // light thread finished; results kept until the parent waits on it
 )
+
+// pendingIOCanceler is implemented by sockets with cancellable in-flight ops
+type pendingIOCanceler interface {
+	cancelPendingIO()
+}
 
 type coOp int
 
@@ -88,6 +95,8 @@ const (
 	coOpNop coOp = iota
 	coOpUserResume
 	coOpUserYield
+	coOpThreadSpawn // thread.spawn: run the new light thread, post the spawner
+	coOpSchedYield  // coroutine.yield from a light/entry thread: let posted threads run
 )
 
 type coCtx struct {
@@ -100,6 +109,19 @@ type coCtx struct {
 	// true while parked on an async op (yielded to the event loop); a
 	// resume event is only honored for a coroutine in this state
 	asyncPending bool
+
+	// The socket whose I/O this coroutine is parked on, if any. thread.kill
+	// cancels it (by closing the socket, as nginx finalizes the cosocket of
+	// a killed uthread) so the in-flight read can't consume data meant for
+	// a later reader.
+	pendingIO pendingIOCanceler
+
+	// Light thread (thread.spawn) bookkeeping, following ngx_lua's uthreads:
+	// a finished light thread whose parent isn't waiting becomes a zombie
+	// holding its results on its own stack until wait() collects it.
+	isLight        bool
+	zombieChildren []*coCtx // finished children not yet collected by wait()
+	waitingOn      []*coCtx // children this coroutine is parked in wait() for
 }
 
 // LuaThread represents the execution of Lua code in a coroutine
@@ -118,6 +140,14 @@ type LuaThread struct {
 	entryCo      *coCtx
 	coOp         coOp
 	coCtxByState map[*C.lua_State]*coCtx
+
+	// Light thread scheduling: coroutines ready to run once the current one
+	// parks or ends, and the number of live light threads. The thread only
+	// completes when the entry coroutine is done and uthreads is zero.
+	posted     []*coCtx
+	uthreads   int
+	entryDone  bool
+	spawnChild *coCtx // set by thread.spawn for the scheduler to start
 
 	// Exit state (set by golapis.exit())
 	exited   bool // true if golapis.exit() was called
@@ -246,6 +276,132 @@ func (t *LuaThread) cleanupCoroutine(coctx *coCtx) {
 	t.unregisterCoroutine(coctx.co)
 }
 
+// cleanupZombieChildren releases the finished light threads nobody waited
+// on, when their parent coroutine dies
+func (t *LuaThread) cleanupZombieChildren(coctx *coCtx) {
+	for _, z := range coctx.zombieChildren {
+		t.cleanupCoroutine(z)
+		t.uthreads--
+	}
+	coctx.zombieChildren = nil
+}
+
+// postCoroutine queues a coroutine to run once the current one parks or ends
+func (t *LuaThread) postCoroutine(coctx *coCtx) {
+	t.posted = append(t.posted, coctx)
+}
+
+// pickPosted returns the next runnable posted coroutine, or nil
+func (t *LuaThread) pickPosted() *coCtx {
+	for len(t.posted) > 0 {
+		next := t.posted[0]
+		t.posted = t.posted[1:]
+		if next.status == coDead || next.status == coZombie {
+			continue
+		}
+		return next
+	}
+	return nil
+}
+
+// markDead records that a coroutine ended and releases the finished light
+// threads it never waited on
+func (t *LuaThread) markDead(coctx *coCtx) {
+	coctx.status = coDead
+	t.cleanupZombieChildren(coctx)
+}
+
+// anyAsyncPending reports whether some coroutine is parked on an async op,
+// i.e. whether an event can still wake this thread
+func (t *LuaThread) anyAsyncPending() bool {
+	for _, c := range t.coCtxByState {
+		if c.asyncPending {
+			return true
+		}
+	}
+	return false
+}
+
+// switchTo makes co (or, if nil, the next posted coroutine) current and
+// returns the number of values on its stack to resume it with. With nothing
+// runnable it parks the thread, or completes it when the entry coroutine
+// and every light thread are done. A thread that nothing can wake anymore
+// (no posted coroutine, none parked on an async op) is completed as well
+// rather than left hanging, e.g. a zombie whose parent is a suspended
+// coroutine that is never resumed.
+func (t *LuaThread) switchTo(co *coCtx) (int, bool) {
+	if co == nil {
+		co = t.pickPosted()
+	}
+	if co != nil {
+		co.status = coRunning
+		t.curCo = co
+		return int(C.lua_gettop(co.co)), true
+	}
+	if (t.entryDone && t.uthreads == 0) || !t.anyAsyncPending() {
+		if debugEnabled && !(t.entryDone && t.uthreads == 0) {
+			debugLog("scheduler: nothing can resume thread %p (uthreads=%d); completing", t, t.uthreads)
+		}
+		t.status = ThreadDead
+		return 0, false
+	}
+	t.status = ThreadYielded
+	return 0, false
+}
+
+// lightThreadDone handles a light thread that finished (ok) or errored. Its
+// results (or the error message) are on its own stack and markDead has
+// already run. Returns the coroutine to continue with, or nil if the caller
+// should pick from the posted queue.
+func (t *LuaThread) lightThreadDone(coctx *coCtx, ok bool) *coCtx {
+	parent := coctx.parent
+	if parent == nil || parent.status == coDead || parent.status == coZombie {
+		// Nobody can wait on it anymore
+		t.cleanupCoroutine(coctx)
+		t.uthreads--
+		return nil
+	}
+
+	for _, w := range parent.waitingOn {
+		if w != coctx {
+			continue
+		}
+		// Parent is parked in wait() on this thread: hand it the results now
+		nrets := C.lua_gettop(coctx.co)
+		if nrets > 0 {
+			C.lua_xmove(coctx.co, parent.co, nrets)
+		}
+		pushBool(parent.co, ok)
+		C.lua_insert_wrapper(parent.co, 1)
+		parent.waitingOn = nil
+		parent.asyncPending = false
+		t.cleanupCoroutine(coctx)
+		t.uthreads--
+		if debugEnabled {
+			debugLog("thread.done: co=%p delivered %d results to waiting parent %p", coctx.co, nrets, parent.co)
+		}
+		return parent
+	}
+
+	// Parent alive but not waiting: keep results until it does
+	pushBool(coctx.co, ok)
+	C.lua_insert_wrapper(coctx.co, 1)
+	coctx.status = coZombie
+	parent.zombieChildren = append(parent.zombieChildren, coctx)
+	if debugEnabled {
+		debugLog("thread.done: co=%p is now a zombie of %p", coctx.co, parent.co)
+	}
+	return nil
+}
+
+func pushBool(L *C.lua_State, v bool) {
+	if v {
+		C.lua_pushboolean(L, 1)
+	} else {
+		C.lua_pushboolean(L, 0)
+	}
+}
+
 // resume starts or continues execution of the thread (internal)
 // Pass nil or empty slice when no values are needed
 func (t *LuaThread) resume(values []interface{}) error {
@@ -344,9 +500,25 @@ func (t *LuaThread) resumeInternal(values []interface{}, initialArgCount int) er
 
 		switch result {
 		case 0: // LUA_OK
-			coctx.status = coDead
-			if coctx.parent == nil {
-				t.status = ThreadDead
+			t.markDead(coctx)
+
+			if coctx == t.entryCo {
+				t.entryDone = true
+				if n, ok := t.switchTo(nil); ok {
+					pendingArgCount = n
+					continue
+				}
+				return nil
+			}
+
+			if coctx.isLight {
+				if debugEnabled {
+					debugLog("thread.done: light thread co=%p ended normally", coctx.co)
+				}
+				if n, ok := t.switchTo(t.lightThreadDone(coctx, true)); ok {
+					pendingArgCount = n
+					continue
+				}
 				return nil
 			}
 
@@ -373,6 +545,53 @@ func (t *LuaThread) resumeInternal(values []interface{}, initialArgCount int) er
 			}
 
 			switch t.coOp {
+			case coOpThreadSpawn:
+				// The spawner yielded the new thread object (its own return
+				// value) and is posted; the child runs first with [fn, args].
+				// spawn's lua_yield can fail (yield across a C-call boundary,
+				// caught by pcall); the op then surfaces on the spawner's next,
+				// unrelated yield, recognizable by the missing thread object.
+				t.coOp = coOpNop
+				parent := coctx
+				child := t.spawnChild
+				t.spawnChild = nil
+				if child == nil {
+					return fmt.Errorf("thread.spawn: no child coroutine")
+				}
+				if C.lua_gettop(parent.co) != 1 || C.lua_tothread_wrapper(parent.co, 1) != child.co {
+					if debugEnabled {
+						debugLog("scheduler: spawn of co=%p never yielded; discarding", child.co)
+					}
+					t.cleanupCoroutine(child)
+					coctx.status = coSuspended
+					coctx.asyncPending = true
+					if n, ok := t.switchTo(nil); ok {
+						pendingArgCount = n
+						continue
+					}
+					return nil
+				}
+				if debugEnabled {
+					debugLog("scheduler: spawn co=%p from parent=%p", child.co, parent.co)
+				}
+				t.uthreads++
+				parent.status = coNormal
+				t.postCoroutine(parent)
+				child.status = coRunning
+				t.curCo = child
+				pendingArgCount = int(C.lua_gettop(child.co)) - 1
+				continue
+			case coOpSchedYield:
+				// Let other posted threads run, then continue this one
+				t.coOp = coOpNop
+				C.lua_settop(coctx.co, 0)
+				coctx.status = coNormal
+				t.postCoroutine(coctx)
+				if n, ok := t.switchTo(nil); ok {
+					pendingArgCount = n
+					continue
+				}
+				return nil
 			case coOpUserResume:
 				t.coOp = coOpNop
 				parent := coctx
@@ -417,15 +636,36 @@ func (t *LuaThread) resumeInternal(values []interface{}, initialArgCount int) er
 				t.coOp = coOpNop
 				coctx.status = coSuspended
 				coctx.asyncPending = true
-				t.status = ThreadYielded
 				if debugEnabled {
 					debugLog("scheduler: async yield co=%p", coctx.co)
+				}
+				if n, ok := t.switchTo(nil); ok {
+					pendingArgCount = n
+					continue
 				}
 				return nil
 			}
 		default:
 			traceback := t.getTraceback(coctx.co)
-			coctx.status = coDead
+			t.markDead(coctx)
+
+			if coctx == t.entryCo {
+				// An entry error aborts the whole request, light threads included
+				t.status = ThreadDead
+				return errors.New(traceback)
+			}
+
+			if coctx.isLight {
+				log.Printf("lua user thread aborted: %s", traceback)
+				C.lua_settop(coctx.co, 0)
+				pushGoString(coctx.co, traceback)
+				if n, ok := t.switchTo(t.lightThreadDone(coctx, false)); ok {
+					pendingArgCount = n
+					continue
+				}
+				return nil
+			}
+
 			parent := coctx.parent
 			if parent == nil {
 				t.status = ThreadDead
