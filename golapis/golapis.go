@@ -54,6 +54,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -141,8 +142,10 @@ type StateEvent struct {
 
 	// For ResumeThread (async completion)
 	Thread       *LuaThread
+	Co           *coCtx // coroutine that issued the async op; captured at issue time, never nil
 	ResumeValues []interface{}
 	OnResume     func(event *StateEvent) // Called on main thread before resuming Lua (for state mutation)
+	Stale        bool                    // set before OnResume when the coroutine is gone; discard results, only reset state
 
 	// For EventTimerFire
 	Timer     *PendingTimer // timer that fired
@@ -518,20 +521,37 @@ func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
 func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse {
 	thread := event.Thread
 
-	// A thread finalized by Stop() may still have a resume queued from an
-	// async operation that completed late; its coroutine is gone, so the
-	// event is stale and must not run after a restart
-	if thread.co == nil {
+	// The event is stale if the issuing coroutine is no longer parked on an
+	// async op: the thread was finalized by Stop(), the coroutine was
+	// killed, or it isn't registered on this thread anymore. The async
+	// completion may still arrive after any of those.
+	coctx := event.Co
+	switch {
+	case coctx == nil:
+		log.Printf("golapis: resume event without a coroutine dropped (thread %p)", thread)
+		event.Stale = true
+	case thread.co == nil:
+		event.Stale = true
+	case thread.getCoCtx(coctx.co) != coctx || !coctx.asyncPending:
+		event.Stale = true
+	}
+
+	// Execute callback on main thread before resuming Lua. It runs for
+	// stale events too, so Go-side state (socket busy flags) gets reset;
+	// callbacks check event.Stale before committing results.
+	if event.OnResume != nil {
+		event.OnResume(event)
+	}
+
+	if event.Stale {
 		if debugEnabled {
-			debugLog("handleResumeThread: ignoring resume for closed thread %p", thread)
+			debugLog("handleResumeThread: ignoring stale resume for coroutine %p on thread %p", coctx, thread)
 		}
 		return nil
 	}
 
-	// Execute callback on main thread before resuming Lua
-	if event.OnResume != nil {
-		event.OnResume(event)
-	}
+	coctx.asyncPending = false
+	thread.curCo = coctx
 
 	if err := thread.resume(event.ResumeValues); err != nil {
 		// Send error to the original caller

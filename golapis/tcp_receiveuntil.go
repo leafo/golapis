@@ -327,6 +327,7 @@ func golapis_tcp_receiveuntil_iterator(L *C.lua_State) C.int {
 		pushGoString(L, "receiveuntil: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	if debugEnabled {
 		debugLog("tcp.receiveuntil.iter: id=%d size=%d state=%d", sockID, size, reader.state)
@@ -397,10 +398,11 @@ func golapis_tcp_receiveuntil_iterator(L *C.lua_State) C.int {
 					thread.state.eventChan <- &StateEvent{
 						Type:         EventResumeThread,
 						Thread:       thread,
+						Co:           issuingCo,
 						ResumeValues: []interface{}{string(result)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
-							if sock.closed || sock.gen != gen {
+							if event.Stale || sock.closed || sock.gen != gen {
 								event.ResumeValues = []interface{}{nil, "closed"}
 								return
 							}
@@ -429,10 +431,11 @@ func golapis_tcp_receiveuntil_iterator(L *C.lua_State) C.int {
 				thread.state.eventChan <- &StateEvent{
 					Type:         EventResumeThread,
 					Thread:       thread,
+					Co:           issuingCo,
 					ResumeValues: []interface{}{nil, errStr, string(result)},
 					OnResume: func(event *StateEvent) {
 						sock.reading = false
-						if sock.gen == gen {
+						if !event.Stale && sock.gen == gen {
 							sock.setActiveUntilReader(reader)
 						}
 						if errStr != "timeout" && sock.gen == gen {

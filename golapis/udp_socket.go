@@ -338,6 +338,7 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 		pushGoString(L, "setpeername: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	if C.lua_gettop(L) < 2 || C.lua_isstring(L, 2) == 0 {
 		C.lua_pushnil(L)
@@ -431,6 +432,7 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{nil, normalizeNetError(err)},
 			}
 			return
@@ -440,9 +442,10 @@ func golapis_udp_setpeername(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:         EventResumeThread,
 			Thread:       thread,
+			Co:           issuingCo,
 			ResumeValues: []interface{}{1},
 			OnResume: func(event *StateEvent) {
-				if sock.closed || sock.gen != gen {
+				if event.Stale || sock.closed || sock.gen != gen {
 					if conn != nil {
 						conn.Close()
 					}
@@ -537,6 +540,7 @@ func golapis_udp_receive(L *C.lua_State) C.int {
 		pushGoString(L, "receive: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	// Optional size argument (default 65536, max 65536)
 	size := 65536
@@ -570,6 +574,7 @@ func golapis_udp_receive(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{nil, normalizeNetError(err)},
 			}
 			return
@@ -579,6 +584,7 @@ func golapis_udp_receive(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:         EventResumeThread,
 			Thread:       thread,
+			Co:           issuingCo,
 			ResumeValues: []interface{}{string(buf[:n])},
 		}
 	}()

@@ -613,3 +613,61 @@ func TestReqSocketStopStartCycle(t *testing.T) {
 	}
 	conn.Close()
 }
+
+func TestResumeEventForUnknownCoroutineIsDropped(t *testing.T) {
+	// An async completion for a coroutine no longer registered on the
+	// thread must run its OnResume (Go-side cleanup) but not resume Lua.
+	gls, server := startRawSocketServer(t, `
+		golapis.status = 101
+		golapis.send_headers()
+		local sock = assert(golapis.req.socket(true))
+		local line = assert(sock:receive("*l"))
+		sock:send("got:" .. line .. "\n")
+	`)
+
+	conn, reader, _ := dialRaw(t, server, "")
+
+	// Sockets stay in the registry until GC, so filter on this test's state
+	var parked *LuaThread
+	deadline := time.Now().Add(2 * time.Second)
+	for parked == nil && time.Now().Before(deadline) {
+		tcpSocketMu.Lock()
+		for _, sock := range tcpSocketMap {
+			if sock.isRequestSocket && sock.ownerThread != nil && sock.ownerThread.state == gls {
+				parked = sock.ownerThread
+				break
+			}
+		}
+		tcpSocketMu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if parked == nil {
+		t.Fatal("no thread parked on a request socket")
+	}
+
+	// A coroutine context that was never registered on the thread, as
+	// left behind by a killed or finished coroutine
+	stale := make(chan bool, 1)
+	gls.eventChan <- &StateEvent{
+		Type:         EventResumeThread,
+		Thread:       parked,
+		Co:           &coCtx{thread: parked},
+		ResumeValues: []interface{}{nil, "injected"},
+		OnResume:     func(e *StateEvent) { stale <- e.Stale },
+	}
+
+	select {
+	case isStale := <-stale:
+		if !isStale {
+			t.Error("OnResume should see event.Stale for an unregistered coroutine")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnResume did not run")
+	}
+
+	// The thread is still parked on the real receive and finishes normally
+	io.WriteString(conn, "hello\n")
+	if line, _ := reader.ReadString('\n'); line != "got:hello\n" {
+		t.Errorf("line = %q", line)
+	}
+}

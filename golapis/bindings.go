@@ -1024,6 +1024,7 @@ func golapis_http_request(L *C.lua_State) C.int {
 		pushGoString(L, "http.request: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	// Start async HTTP request
 	go func() {
@@ -1051,6 +1052,7 @@ func golapis_http_request(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:         EventResumeThread,
 			Thread:       thread,
+			Co:           issuingCo,
 			ResumeValues: returnVals,
 			Response:     nil,
 		}
@@ -1176,6 +1178,7 @@ func golapis_http_request_internal(L *C.lua_State) C.int {
 		pushGoString(L, "http._request: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	go func() {
 		var body io.Reader
@@ -1188,6 +1191,7 @@ func golapis_http_request_internal(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{nil, err.Error()},
 			}
 			return
@@ -1226,6 +1230,7 @@ func golapis_http_request_internal(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{nil, err.Error()},
 			}
 			return
@@ -1237,6 +1242,7 @@ func golapis_http_request_internal(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{nil, readErr.Error()},
 			}
 			return
@@ -1247,6 +1253,7 @@ func golapis_http_request_internal(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:   EventResumeThread,
 			Thread: thread,
+			Co:     issuingCo,
 			ResumeValues: []interface{}{
 				string(respBody),
 				resp.StatusCode,
@@ -1275,6 +1282,7 @@ func golapis_location_capture(L *C.lua_State) C.int {
 		pushGoString(L, "location.capture: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 	if thread.request == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "location.capture can only be called from HTTP request context")
@@ -1311,6 +1319,7 @@ func golapis_location_capture(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:   EventResumeThread,
 				Thread: thread,
+				Co:     issuingCo,
 				ResumeValues: []interface{}{CaptureResponse{
 					Status:  recorder.Code,
 					Body:    recorder.Body.String(),
@@ -1351,6 +1360,7 @@ func golapis_location_capture(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:   EventResumeThread,
 				Thread: thread,
+				Co:     issuingCo,
 				ResumeValues: []interface{}{CaptureResponse{
 					Status:  capturedStatus,
 					Body:    capturedBody,
@@ -1392,6 +1402,7 @@ func golapis_sleep(L *C.lua_State) C.int {
 		pushGoString(L, "sleep: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	if debugEnabled {
 		debugLog("sleep: co=%p seconds=%f", L, seconds)
@@ -1405,6 +1416,7 @@ func golapis_sleep(L *C.lua_State) C.int {
 	thread.state.timerSched.addResume(&StateEvent{
 		Type:         EventResumeThread,
 		Thread:       thread,
+		Co:           issuingCo,
 		ResumeValues: nil, // sleep returns nothing
 		Response:     nil, // no response needed for internal events
 	}, time.Duration(seconds*float64(time.Second)))
@@ -2651,6 +2663,7 @@ func golapis_req_read_body(L *C.lua_State) C.int {
 		pushGoString(L, "no request found")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	req := thread.request
 
@@ -2701,6 +2714,7 @@ func golapis_req_read_body(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:         EventResumeThread,
 			Thread:       thread,
+			Co:           issuingCo,
 			ResumeValues: resumeValues,
 			OnResume: func(event *StateEvent) {
 				req.bodyData = data

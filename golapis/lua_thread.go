@@ -96,6 +96,10 @@ type coCtx struct {
 	status coStatus
 	coRef  C.int
 	thread *LuaThread
+
+	// true while parked on an async op (yielded to the event loop); a
+	// resume event is only honored for a coroutine in this state
+	asyncPending bool
 }
 
 // LuaThread represents the execution of Lua code in a coroutine
@@ -412,6 +416,7 @@ func (t *LuaThread) resumeInternal(values []interface{}, initialArgCount int) er
 			default:
 				t.coOp = coOpNop
 				coctx.status = coSuspended
+				coctx.asyncPending = true
 				t.status = ThreadYielded
 				if debugEnabled {
 					debugLog("scheduler: async yield co=%p", coctx.co)

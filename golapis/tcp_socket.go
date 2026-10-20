@@ -336,6 +336,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 		pushGoString(L, "connect: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	if C.lua_gettop(L) < 2 || C.lua_isstring(L, 2) == 0 {
 		C.lua_pushnil(L)
@@ -416,6 +417,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 				thread.state.eventChan <- &StateEvent{
 					Type:         EventResumeThread,
 					Thread:       thread,
+					Co:           issuingCo,
 					ResumeValues: []interface{}{nil, normalizeNetError(err)},
 					OnResume: func(event *StateEvent) {
 						sock.connecting = false
@@ -430,10 +432,11 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{1},
 				OnResume: func(event *StateEvent) {
 					sock.connecting = false
-					if sock.closed || sock.gen != gen {
+					if event.Stale || sock.closed || sock.gen != gen {
 						if conn != nil {
 							conn.Close()
 						}
@@ -518,6 +521,7 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{nil, normalizeNetError(err)},
 				OnResume: func(event *StateEvent) {
 					sock.connecting = false
@@ -532,10 +536,11 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:         EventResumeThread,
 			Thread:       thread,
+			Co:           issuingCo,
 			ResumeValues: []interface{}{1},
 			OnResume: func(event *StateEvent) {
 				sock.connecting = false
-				if sock.closed || sock.gen != gen {
+				if event.Stale || sock.closed || sock.gen != gen {
 					conn.Close()
 					event.ResumeValues = []interface{}{nil, "closed"}
 					return
@@ -584,6 +589,7 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 		pushGoString(L, "send: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	if C.lua_gettop(L) < 2 {
 		C.lua_pushnil(L)
@@ -630,6 +636,7 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{nil, errStr},
 				OnResume: func(event *StateEvent) {
 					sock.writing = false
@@ -647,10 +654,11 @@ func golapis_tcp_send(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:         EventResumeThread,
 			Thread:       thread,
+			Co:           issuingCo,
 			ResumeValues: []interface{}{n},
 			OnResume: func(event *StateEvent) {
 				sock.writing = false
-				if sock.closed || sock.gen != gen {
+				if event.Stale || sock.closed || sock.gen != gen {
 					event.ResumeValues = []interface{}{nil, "closed"}
 				}
 			},
@@ -694,6 +702,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 		pushGoString(L, "receive: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	// Restore any partial-match bytes withheld by a receiveuntil reader
 	sock.restorePendingPattern(nil)
@@ -819,6 +828,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 					thread.state.eventChan <- &StateEvent{
 						Type:         EventResumeThread,
 						Thread:       thread,
+						Co:           issuingCo,
 						ResumeValues: []interface{}{nil, errStr, string(result)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
@@ -838,10 +848,11 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{dataStr},
 				OnResume: func(event *StateEvent) {
 					sock.reading = false
-					if sock.closed || sock.gen != gen {
+					if event.Stale || sock.closed || sock.gen != gen {
 						event.ResumeValues = []interface{}{nil, "closed"}
 					}
 				},
@@ -876,10 +887,11 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						thread.state.eventChan <- &StateEvent{
 							Type:         EventResumeThread,
 							Thread:       thread,
+							Co:           issuingCo,
 							ResumeValues: []interface{}{string(result)},
 							OnResume: func(event *StateEvent) {
 								sock.reading = false
-								if sock.closed || sock.gen != gen {
+								if event.Stale || sock.closed || sock.gen != gen {
 									event.ResumeValues = []interface{}{nil, "closed"}
 								}
 							},
@@ -894,6 +906,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 					thread.state.eventChan <- &StateEvent{
 						Type:         EventResumeThread,
 						Thread:       thread,
+						Co:           issuingCo,
 						ResumeValues: []interface{}{nil, errStr, string(result)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
@@ -947,10 +960,11 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 						thread.state.eventChan <- &StateEvent{
 							Type:         EventResumeThread,
 							Thread:       thread,
+							Co:           issuingCo,
 							ResumeValues: []interface{}{string(line)},
 							OnResume: func(event *StateEvent) {
 								sock.reading = false
-								if sock.closed || sock.gen != gen {
+								if event.Stale || sock.closed || sock.gen != gen {
 									event.ResumeValues = []interface{}{nil, "closed"}
 									return
 								}
@@ -986,6 +1000,7 @@ func golapis_tcp_receive(L *C.lua_State) C.int {
 					thread.state.eventChan <- &StateEvent{
 						Type:         EventResumeThread,
 						Thread:       thread,
+						Co:           issuingCo,
 						ResumeValues: []interface{}{nil, errStr, string(partial)},
 						OnResume: func(event *StateEvent) {
 							sock.reading = false
@@ -1075,6 +1090,7 @@ func golapis_tcp_receiveany(L *C.lua_State) C.int {
 		pushGoString(L, "receiveany: could not find thread context")
 		return 2
 	}
+	issuingCo := thread.curCo // captured now; goroutines below must not read thread state
 
 	// Capture values for goroutine
 	timeout := sock.readTimeout
@@ -1106,10 +1122,11 @@ func golapis_tcp_receiveany(L *C.lua_State) C.int {
 			thread.state.eventChan <- &StateEvent{
 				Type:         EventResumeThread,
 				Thread:       thread,
+				Co:           issuingCo,
 				ResumeValues: []interface{}{dataStr},
 				OnResume: func(event *StateEvent) {
 					sock.reading = false
-					if sock.closed || sock.gen != gen {
+					if event.Stale || sock.closed || sock.gen != gen {
 						event.ResumeValues = []interface{}{nil, "closed"}
 					}
 				},
@@ -1127,6 +1144,7 @@ func golapis_tcp_receiveany(L *C.lua_State) C.int {
 		thread.state.eventChan <- &StateEvent{
 			Type:         EventResumeThread,
 			Thread:       thread,
+			Co:           issuingCo,
 			ResumeValues: []interface{}{nil, errStr},
 			OnResume: func(event *StateEvent) {
 				sock.reading = false
