@@ -96,6 +96,8 @@ type GolapisLuaState struct {
 	tcpPoolsClosed bool // set during drain; rejects new inserts
 
 	httpMux *http.ServeMux // HTTP mux for internal routing (used by location.capture)
+
+	hijacked hijackedConns // connections taken over by req.socket(true)
 }
 
 // PendingTimer represents a scheduled timer waiting to fire
@@ -234,6 +236,7 @@ func (gls *GolapisLuaState) Start() {
 	gls.tcpPoolsMu.Lock()
 	gls.tcpPoolsClosed = false
 	gls.tcpPoolsMu.Unlock()
+	gls.hijacked.reset()
 	gls.timerSched = newTimerScheduler(gls)
 	gls.timerSched.start()
 	gls.running = true
@@ -253,6 +256,7 @@ func (gls *GolapisLuaState) Stop() {
 	}
 	gls.CancelAllTimers()
 	gls.drainTCPPools()
+	gls.CloseHijackedConns()
 
 	resp := make(chan *StateResponse, 1)
 	gls.eventChan <- &StateEvent{
@@ -377,6 +381,23 @@ func (gls *GolapisLuaState) eventLoop() {
 			gls.pendingTimers = make(map[*PendingTimer]struct{})
 			gls.timerMu.Unlock()
 
+			// Finalize threads still parked on async operations (e.g. a raw
+			// socket read whose connection Stop just closed): their resume
+			// events may still be queued behind this one and will never be
+			// processed, so answer their callers and release them here.
+			live := make(map[*LuaThread]struct{})
+			for _, thread := range luaThreadMap {
+				if thread.state == gls {
+					live[thread] = struct{}{}
+				}
+			}
+			for thread := range live {
+				if thread.responseChan != nil {
+					thread.responseChan <- &StateResponse{Error: errors.New("lua state stopped")}
+				}
+				thread.close()
+			}
+
 			if event.Response != nil {
 				event.Response <- &StateResponse{}
 			}
@@ -496,6 +517,16 @@ func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
 // Returns nil because response is sent via thread.responseChan
 func (gls *GolapisLuaState) handleResumeThread(event *StateEvent) *StateResponse {
 	thread := event.Thread
+
+	// A thread finalized by Stop() may still have a resume queued from an
+	// async operation that completed late; its coroutine is gone, so the
+	// event is stale and must not run after a restart
+	if thread.co == nil {
+		if debugEnabled {
+			debugLog("handleResumeThread: ignoring resume for closed thread %p", thread)
+		}
+		return nil
+	}
 
 	// Execute callback on main thread before resuming Lua
 	if event.OnResume != nil {

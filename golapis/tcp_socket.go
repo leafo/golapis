@@ -22,15 +22,16 @@ import (
 
 // TCPSocket represents a TCP cosocket compatible with ngx.socket.tcp
 type TCPSocket struct {
-	conn           net.Conn      // *net.TCPConn or *net.UnixConn
-	connectTimeout time.Duration // per-socket connect timeout (0 = no timeout)
-	readTimeout    time.Duration // per-socket read timeout (0 = no timeout)
-	writeTimeout   time.Duration // per-socket write timeout (0 = no timeout)
-	connected      bool          // true after successful connect
-	closed         bool          // true after close() called
-	isUnix         bool          // true for unix:/ domain sockets
-	gen            uint64        // increments to invalidate in-flight async operations
-	ownerThread    *LuaThread    // thread context that created this socket (for request affinity)
+	conn            net.Conn      // *net.TCPConn or *net.UnixConn
+	connectTimeout  time.Duration // per-socket connect timeout (0 = no timeout)
+	readTimeout     time.Duration // per-socket read timeout (0 = no timeout)
+	writeTimeout    time.Duration // per-socket write timeout (0 = no timeout)
+	connected       bool          // true after successful connect
+	closed          bool          // true after close() called
+	isUnix          bool          // true for unix:/ domain sockets
+	isRequestSocket bool          // true for the downstream connection from req.socket(true)
+	gen             uint64        // increments to invalidate in-flight async operations
+	ownerThread     *LuaThread    // thread context that created this socket (for request affinity)
 
 	// TCP-specific: internal read buffer for exact byte reads
 	readBuf    []byte
@@ -82,6 +83,15 @@ func unregisterTCPSocket(id uint64) {
 	tcpSocketMu.Lock()
 	defer tcpSocketMu.Unlock()
 	delete(tcpSocketMap, id)
+}
+
+// pushTCPSocketUserdata pushes a userdata holding the socket ID with the TCP
+// socket metatable applied
+func pushTCPSocketUserdata(L *C.lua_State, id uint64) {
+	ptr := C.lua_newuserdata(L, C.size_t(unsafe.Sizeof(uint64(0))))
+	*(*uint64)(ptr) = id
+	C.luaL_getmetatable_wrapper(L, cStrTCPMetatable)
+	C.lua_setmetatable(L, -2)
 }
 
 // getTCPSocketFromUserdata extracts the TCPSocket from Lua userdata at stack index
@@ -200,14 +210,7 @@ func golapis_socket_tcp_new(L *C.lua_State) C.int {
 		ownerThread:    thread,
 	}
 	id := registerTCPSocket(sock)
-
-	// Create userdata containing the socket ID
-	ptr := C.lua_newuserdata(L, C.size_t(unsafe.Sizeof(uint64(0))))
-	*(*uint64)(ptr) = id
-
-	// Apply the TCP socket metatable
-	C.luaL_getmetatable_wrapper(L, cStrTCPMetatable)
-	C.lua_setmetatable(L, -2)
+	pushTCPSocketUserdata(L, id)
 
 	if debugEnabled {
 		debugLog("tcp.new: id=%d co=%p", id, L)
@@ -306,6 +309,12 @@ func golapis_tcp_connect(L *C.lua_State) C.int {
 	}
 
 	if !checkTCPSocketBusy(L, sock, true, true, true) {
+		return 2
+	}
+
+	if sock.isRequestSocket {
+		C.lua_pushnil(L)
+		pushGoString(L, "attempt to connect a request socket")
 		return 2
 	}
 
@@ -1197,6 +1206,13 @@ func golapis_tcp_setkeepalive(L *C.lua_State) C.int {
 	if !sock.connected || sock.conn == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "not connected")
+		return 2
+	}
+
+	// The client connection can't be reused for outgoing requests
+	if sock.isRequestSocket {
+		C.lua_pushnil(L)
+		pushGoString(L, "cannot pool a request socket")
 		return 2
 	}
 

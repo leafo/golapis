@@ -29,6 +29,7 @@ extern int golapis_today(lua_State *L);
 extern int golapis_time(lua_State *L);
 extern int golapis_req_start_time(lua_State *L);
 extern int golapis_req_http_version(lua_State *L);
+extern int golapis_req_socket(lua_State *L);
 extern int golapis_send_headers(lua_State *L);
 extern int golapis_flush(lua_State *L);
 extern int golapis_headers_sent_get(lua_State *L);
@@ -173,6 +174,10 @@ static int c_req_start_time_wrapper(lua_State *L) {
 
 static int c_req_http_version_wrapper(lua_State *L) {
     return golapis_req_http_version(L);
+}
+
+static int c_req_socket_wrapper(lua_State *L) {
+    return golapis_req_socket(L);
 }
 
 static int c_send_headers_wrapper(lua_State *L) {
@@ -875,6 +880,8 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "start_time");
     lua_pushcfunction(L, c_req_http_version_wrapper);
     lua_setfield(L, -2, "http_version");
+    lua_pushcfunction(L, c_req_socket_wrapper);
+    lua_setfield(L, -2, "socket");
     lua_setfield(L, -2, "req");         // Add req table to `golapis`
 
     // Create timer table
@@ -1689,6 +1696,12 @@ func golapis_flush(L *C.lua_State) C.int {
 		return 2
 	}
 
+	if thread.request.Hijacked() {
+		C.lua_pushnil(L)
+		pushGoString(L, ErrRawSocketAcquired.Error())
+		return 2
+	}
+
 	// The optional wait argument (ngx.flush(true)) is accepted but ignored.
 	// Note: like say(), this writes on the event-loop goroutine, so a slow
 	// client stalls the loop until the write completes or WriteTimeout fires.
@@ -2256,6 +2269,11 @@ func golapisOutput(L *C.lua_State, appendNewline bool, funcName string) C.int {
 	data := buf.Bytes()
 	for len(data) > 0 {
 		n, writeErr := writer.Write(data)
+		if errors.Is(writeErr, ErrRawSocketAcquired) {
+			C.lua_pushnil(L)
+			pushGoString(L, writeErr.Error())
+			return 2
+		}
 		if writeErr != nil {
 			C.lua_pushnil(L)
 			pushGoString(L, "failed to write to output")
@@ -2644,6 +2662,14 @@ func golapis_req_read_body(L *C.lua_State) C.int {
 			return 2
 		}
 		return 0
+	}
+
+	// Once the raw socket owns the connection the body can't be read through
+	// net/http anymore; both would be reading the same stream
+	if req.Hijacked() {
+		C.lua_pushnil(L)
+		pushGoString(L, ErrRawSocketAcquired.Error())
+		return 2
 	}
 
 	req.bodyRead = true

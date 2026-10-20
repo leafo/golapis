@@ -161,6 +161,15 @@ func (gls *GolapisLuaState) HTTPHandler(config *HTTPServerConfig) http.Handler {
 		}
 
 		result := <-resp
+		if req.hijackedConn != nil {
+			if result.Error != nil {
+				log.Printf("error after raw socket acquired %s %s: %v", r.Method, r.URL.RequestURI(), result.Error)
+			}
+			// The request owns the connection now; net/http won't close it
+			// when the handler returns, so close it once the thread is done.
+			req.hijackedConn.Close()
+			return
+		}
 		if result.Error != nil {
 			log.Printf("500 %s %s: %v", r.Method, r.URL.RequestURI(), result.Error)
 			// Once headers are committed the status can't change; sending
@@ -247,6 +256,11 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 		if err := <-shutdownDone; err != nil {
 			log.Printf("HTTP server shutdown error: %v", err)
 		}
+		// Shutdown doesn't track hijacked connections (raw request sockets).
+		// Give their threads the same grace period, then close them so the
+		// request wait can finish.
+		waitWithTimeout(lua.Wait, config.ShutdownTimeout)
+		lua.CloseHijackedConns()
 		requestWg.Wait()
 	default:
 	}
@@ -256,6 +270,26 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 		lua.Wait()
 	}
 	lua.Stop()
+}
+
+// waitWithTimeout runs wait and returns false if it hasn't finished after
+// timeout. A negative timeout (NoTimeout) waits indefinitely.
+func waitWithTimeout(wait func(), timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wait()
+		close(done)
+	}()
+	if timeout < 0 {
+		<-done
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // setupGracefulShutdown sets up signal handling for graceful shutdown
