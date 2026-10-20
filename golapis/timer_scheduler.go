@@ -49,7 +49,7 @@ func (s *timerScheduler) addTimer(timer *PendingTimer, delay time.Duration) {
 	s.notify()
 }
 
-func (s *timerScheduler) addResume(event *StateEvent, delay time.Duration) {
+func (s *timerScheduler) addResume(event *StateEvent, delay time.Duration) *scheduledEntry {
 	entry := &scheduledEntry{
 		deadline: time.Now().Add(delay),
 		event:    event,
@@ -60,6 +60,20 @@ func (s *timerScheduler) addResume(event *StateEvent, delay time.Duration) {
 	heap.Push(&s.heap, entry)
 	s.state.timerMu.Unlock()
 	s.notify()
+	return entry
+}
+
+// removeResume drops a resume entry that is no longer wanted (e.g. a
+// semaphore wait that was posted before its timeout). If the scheduler
+// already popped it, the event still fires and its OnResume must treat it
+// as stale.
+func (s *timerScheduler) removeResume(entry *scheduledEntry) {
+	s.state.timerMu.Lock()
+	if entry.index >= 0 {
+		heap.Remove(&s.heap, entry.index)
+		entry.index = -1
+	}
+	s.state.timerMu.Unlock()
 }
 
 func (s *timerScheduler) cancelPendingTimers() {

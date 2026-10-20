@@ -711,6 +711,9 @@ func (t *LuaThread) close() {
 			debugLog("thread.close: co=%p", t.co)
 		}
 		for _, coctx := range t.coCtxByState {
+			// A coroutine still parked (request aborted) must not linger
+			// in a shared semaphore's wait queue or hold a socket read
+			t.cancelPendingIO(coctx)
 			if coctx.coRef != 0 {
 				C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, coctx.coRef)
 				coctx.coRef = 0

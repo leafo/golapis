@@ -99,6 +99,10 @@ type GolapisLuaState struct {
 	httpMux *http.ServeMux // HTTP mux for internal routing (used by location.capture)
 
 	hijacked hijackedConns // connections taken over by req.socket(true)
+
+	// Semaphores with units to hand out; drained by the event loop after
+	// each event (the equivalent of ngx_lua posting the sema handler)
+	readySemaphores []*Semaphore
 }
 
 // PendingTimer represents a scheduled timer waiting to fire
@@ -412,6 +416,8 @@ func (gls *GolapisLuaState) eventLoop() {
 		if resp != nil && event.Response != nil {
 			event.Response <- resp
 		}
+
+		gls.runSemaphoreHandlers()
 	}
 }
 

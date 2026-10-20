@@ -53,6 +53,11 @@ extern int golapis_coroutine_running(lua_State *L);
 extern int golapis_thread_spawn(lua_State *L);
 extern int golapis_thread_wait(lua_State *L);
 extern int golapis_thread_kill(lua_State *L);
+extern int golapis_semaphore_new(lua_State *L);
+extern int golapis_semaphore_wait(lua_State *L);
+extern int golapis_semaphore_post(lua_State *L);
+extern int golapis_semaphore_count(lua_State *L);
+extern int golapis_semaphore_gc(lua_State *L);
 
 // UDP socket functions
 extern int golapis_socket_udp_new(lua_State *L);
@@ -378,6 +383,63 @@ static int c_thread_kill_wrapper(lua_State *L) {
         return luaL_error(L, "%s", lua_tostring(L, -1));
     }
     return result;
+}
+
+static int c_semaphore_new_wrapper(lua_State *L) {
+    int result = golapis_semaphore_new(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_semaphore_wait_wrapper(lua_State *L) {
+    int result = golapis_semaphore_wait(L);
+    if (result == -3) {
+        return lua_yield(L, 0);
+    }
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_semaphore_post_wrapper(lua_State *L) {
+    int result = golapis_semaphore_post(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_semaphore_count_wrapper(lua_State *L) {
+    int result = golapis_semaphore_count(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_semaphore_gc_wrapper(lua_State *L) {
+    return golapis_semaphore_gc(L);
+}
+
+// Initialize the semaphore metatable in the registry (call once during setup)
+static void init_semaphore_metatable(lua_State *L) {
+    luaL_newmetatable(L, "golapis.semaphore");
+
+    lua_newtable(L);
+    lua_pushcfunction(L, c_semaphore_wait_wrapper);
+    lua_setfield(L, -2, "wait");
+    lua_pushcfunction(L, c_semaphore_post_wrapper);
+    lua_setfield(L, -2, "post");
+    lua_pushcfunction(L, c_semaphore_count_wrapper);
+    lua_setfield(L, -2, "count");
+    lua_setfield(L, -2, "__index");  // metatable.__index = methods table
+
+    lua_pushcfunction(L, c_semaphore_gc_wrapper);
+    lua_setfield(L, -2, "__gc");
+    lua_pop(L, 1);
 }
 
 static void setup_coroutine_module(lua_State *L) {
@@ -943,6 +1005,12 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "kill");
     lua_setfield(L, -2, "thread");      // Add thread table to `golapis`
 
+    // Create semaphore table (ngx.semaphore equivalent)
+    lua_newtable(L);
+    lua_pushcfunction(L, c_semaphore_new_wrapper);
+    lua_setfield(L, -2, "new");
+    lua_setfield(L, -2, "semaphore");   // Add semaphore table to `golapis`
+
     // Create debug table
     lua_newtable(L);
     lua_pushcfunction(L, c_debug_cancel_timers_wrapper);
@@ -996,6 +1064,7 @@ static int setup_golapis_global(lua_State *L) {
     init_main_metatable(L);
     init_udp_socket_metatable(L);
     init_tcp_socket_metatable(L);
+    init_semaphore_metatable(L);
     init_tcp_until_reader_metatable(L);
     init_shdict_metatable(L);
 

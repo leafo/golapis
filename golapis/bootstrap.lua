@@ -24,6 +24,11 @@ do
   end
 end
 
+-- Libraries written for OpenResty load the semaphore via require
+package.preload["ngx.semaphore"] = function()
+  return golapis.semaphore
+end
+
 -- Load HTTP module wrapper (provides LuaSocket-style interface)
 do
   local http_mod = assert(loadstring(golapis._http_src, "@http.lua"))()
