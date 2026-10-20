@@ -28,6 +28,10 @@ extern int golapis_now(lua_State *L);
 extern int golapis_today(lua_State *L);
 extern int golapis_time(lua_State *L);
 extern int golapis_req_start_time(lua_State *L);
+extern int golapis_req_http_version(lua_State *L);
+extern int golapis_send_headers(lua_State *L);
+extern int golapis_flush(lua_State *L);
+extern int golapis_headers_sent_get(lua_State *L);
 extern int golapis_escape_uri(lua_State *L);
 extern int golapis_unescape_uri(lua_State *L);
 extern int golapis_status_get(lua_State *L);
@@ -165,6 +169,18 @@ static int c_req_get_post_args_wrapper(lua_State *L) {
 
 static int c_req_start_time_wrapper(lua_State *L) {
     return golapis_req_start_time(L);
+}
+
+static int c_req_http_version_wrapper(lua_State *L) {
+    return golapis_req_http_version(L);
+}
+
+static int c_send_headers_wrapper(lua_State *L) {
+    return golapis_send_headers(L);
+}
+
+static int c_flush_wrapper(lua_State *L) {
+    return golapis_flush(L);
 }
 
 // Initialize the headers metatable in the registry (call once during setup)
@@ -539,6 +555,9 @@ static int c_main_index_wrapper(lua_State *L) {
         if (strcmp(key, "status") == 0) {
             return golapis_status_get(L);
         }
+        if (strcmp(key, "headers_sent") == 0) {
+            return golapis_headers_sent_get(L);
+        }
     }
     // Fall through: rawget the key from the table
     lua_rawget(L, 1);
@@ -556,6 +575,9 @@ static int c_main_newindex_wrapper(lua_State *L) {
                 return luaL_error(L, "%s", lua_tostring(L, -1));
             }
             return result;
+        }
+        if (strcmp(key, "headers_sent") == 0) {
+            return luaL_error(L, "attempt to assign read-only field 'headers_sent'");
         }
     }
     // Fall through: rawset the key/value in the table
@@ -715,6 +737,25 @@ static int setup_golapis_global(lua_State *L) {
     lua_pushcfunction(L, c_say_wrapper);
     lua_setfield(L, -2, "say");
 
+    lua_pushcfunction(L, c_send_headers_wrapper);
+    lua_setfield(L, -2, "send_headers");
+
+    lua_pushcfunction(L, c_flush_wrapper);
+    lua_setfield(L, -2, "flush");
+
+    // config table (ngx.config equivalent) so libraries that feature-detect
+    // on ngx_lua_version can load
+    lua_newtable(L);
+    lua_pushboolean(L, 0);
+    lua_setfield(L, -2, "debug");
+    lua_pushstring(L, "http");
+    lua_setfield(L, -2, "subsystem");
+    lua_pushinteger(L, 10028);
+    lua_setfield(L, -2, "ngx_lua_version");
+    lua_pushinteger(L, 1027001);
+    lua_setfield(L, -2, "nginx_version");
+    lua_setfield(L, -2, "config");
+
     lua_pushcfunction(L, c_log_wrapper);
     lua_setfield(L, -2, "log");
 
@@ -832,6 +873,8 @@ static int setup_golapis_global(lua_State *L) {
     lua_setfield(L, -2, "get_post_args");
     lua_pushcfunction(L, c_req_start_time_wrapper);
     lua_setfield(L, -2, "start_time");
+    lua_pushcfunction(L, c_req_http_version_wrapper);
+    lua_setfield(L, -2, "http_version");
     lua_setfield(L, -2, "req");         // Add req table to `golapis`
 
     // Create timer table
@@ -1596,6 +1639,82 @@ func golapis_req_start_time(L *C.lua_State) C.int {
 
 	startTime := float64(thread.request.StartTime().UnixNano()) / 1e9
 	C.lua_pushnumber(L, C.lua_Number(startTime))
+	return 1
+}
+
+//export golapis_req_http_version
+func golapis_req_http_version(L *C.lua_State) C.int {
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		C.lua_pushnil(L)
+		return 1
+	}
+
+	r := thread.request.Request
+	// ngx.req.http_version returns 0.9, 1.0, 1.1, 2, or 3
+	version := float64(r.ProtoMajor)
+	if r.ProtoMajor < 2 {
+		version += float64(r.ProtoMinor) / 10
+	}
+	C.lua_pushnumber(L, C.lua_Number(version))
+	return 1
+}
+
+//export golapis_send_headers
+func golapis_send_headers(L *C.lua_State) C.int {
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "no request found")
+		return 2
+	}
+
+	if w, ok := thread.outputWriter.(*headerFlushingWriter); ok {
+		w.SendHeaders()
+	} else {
+		// Output is being captured (e.g. location.capture into a buffer);
+		// there is no client to send to, but the headers are now committed.
+		thread.request.HeadersSent = true
+	}
+	C.lua_pushinteger(L, 1)
+	return 1
+}
+
+//export golapis_flush
+func golapis_flush(L *C.lua_State) C.int {
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "no request found")
+		return 2
+	}
+
+	// The optional wait argument (ngx.flush(true)) is accepted but ignored.
+	// Note: like say(), this writes on the event-loop goroutine, so a slow
+	// client stalls the loop until the write completes or WriteTimeout fires.
+	if w, ok := thread.outputWriter.(*headerFlushingWriter); ok {
+		w.Flush()
+	} else {
+		thread.request.HeadersSent = true
+	}
+	C.lua_pushinteger(L, 1)
+	return 1
+}
+
+//export golapis_headers_sent_get
+func golapis_headers_sent_get(L *C.lua_State) C.int {
+	// Stack: [golapis_table, "headers_sent"]
+	thread := getLuaThreadFromRegistry(L)
+	if thread == nil || thread.request == nil {
+		C.lua_pushboolean(L, 0)
+		return 1
+	}
+
+	if thread.request.HeadersSent {
+		C.lua_pushboolean(L, 1)
+	} else {
+		C.lua_pushboolean(L, 0)
+	}
 	return 1
 }
 

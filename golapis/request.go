@@ -76,6 +76,21 @@ func (w *headerFlushingWriter) Write(data []byte) (int, error) {
 	return w.ResponseWriter.Write(data)
 }
 
+// SendHeaders flushes the accumulated headers to the client without writing
+// any body.
+func (w *headerFlushingWriter) SendHeaders() {
+	w.request.FlushHeaders(w.ResponseWriter)
+}
+
+// Flush sends headers if needed and pushes any buffered response data to
+// the client, if the underlying writer supports it.
+func (w *headerFlushingWriter) Flush() {
+	w.SendHeaders()
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // WrapResponseWriter creates a headerFlushingWriter that will apply
 // accumulated headers from the GolapisRequest on first write.
 func (r *GolapisRequest) WrapResponseWriter(w http.ResponseWriter) *headerFlushingWriter {

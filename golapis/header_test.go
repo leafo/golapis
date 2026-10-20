@@ -1,12 +1,19 @@
 package golapis
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
 // runLuaWithHTTP runs Lua code in an HTTP context and returns the response recorder
 func runLuaWithHTTP(t *testing.T, code string) (*httptest.ResponseRecorder, *GolapisRequest, error) {
+	t.Helper()
+	return runLuaWithHTTPRequest(t, httptest.NewRequest("GET", "/test", nil), code)
+}
+
+// runLuaWithHTTPRequest is runLuaWithHTTP with a caller-supplied request
+func runLuaWithHTTPRequest(t *testing.T, r *http.Request, code string) (*httptest.ResponseRecorder, *GolapisRequest, error) {
 	t.Helper()
 
 	gls := NewGolapisLuaState()
@@ -18,9 +25,7 @@ func runLuaWithHTTP(t *testing.T, code string) (*httptest.ResponseRecorder, *Gol
 	gls.Start()
 	defer gls.Stop()
 
-	// Create mock HTTP request/response
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
 
 	// Create GolapisRequest and wrap writer (like http.go does)
 	req := NewGolapisRequest(r)
