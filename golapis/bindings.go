@@ -46,15 +46,15 @@ extern int golapis_decode_base64(lua_State *L);
 extern int golapis_decode_base64mime(lua_State *L);
 extern int golapis_exit(lua_State *L);
 extern int golapis_coroutine_create(lua_State *L);
-extern int golapis_coroutine_resume(lua_State *L);
-extern int golapis_coroutine_yield(lua_State *L);
+extern int golapis_coroutine_resume(lua_State *L, int yieldable);
+extern int golapis_coroutine_yield(lua_State *L, int yieldable);
 extern int golapis_coroutine_status(lua_State *L);
 extern int golapis_coroutine_running(lua_State *L);
-extern int golapis_thread_spawn(lua_State *L);
-extern int golapis_thread_wait(lua_State *L);
+extern int golapis_thread_spawn(lua_State *L, int yieldable);
+extern int golapis_thread_wait(lua_State *L, int yieldable);
 extern int golapis_thread_kill(lua_State *L);
 extern int golapis_semaphore_new(lua_State *L);
-extern int golapis_semaphore_wait(lua_State *L);
+extern int golapis_semaphore_wait(lua_State *L, int yieldable);
 extern int golapis_semaphore_post(lua_State *L);
 extern int golapis_semaphore_count(lua_State *L);
 extern int golapis_semaphore_gc(lua_State *L);
@@ -316,7 +316,7 @@ static int c_coroutine_create_wrapper(lua_State *L) {
 }
 
 static int c_coroutine_resume_wrapper(lua_State *L) {
-    int result = golapis_coroutine_resume(L);
+    int result = golapis_coroutine_resume(L, lua_isyieldable(L));
     if (result == -2) {
         return lua_yield(L, lua_gettop(L) - 1);
     }
@@ -327,7 +327,7 @@ static int c_coroutine_resume_wrapper(lua_State *L) {
 }
 
 static int c_coroutine_yield_wrapper(lua_State *L) {
-    int result = golapis_coroutine_yield(L);
+    int result = golapis_coroutine_yield(L, lua_isyieldable(L));
     if (result == -2) {
         return lua_yield(L, lua_gettop(L));
     }
@@ -356,7 +356,7 @@ static int c_coroutine_running_wrapper(lua_State *L) {
 // thread.spawn yields the new thread object (1 value) so the spawner can be
 // posted and the child run first
 static int c_thread_spawn_wrapper(lua_State *L) {
-    int result = golapis_thread_spawn(L);
+    int result = golapis_thread_spawn(L, lua_isyieldable(L));
     if (result == -2) {
         return lua_yield(L, 1);
     }
@@ -367,7 +367,7 @@ static int c_thread_spawn_wrapper(lua_State *L) {
 }
 
 static int c_thread_wait_wrapper(lua_State *L) {
-    int result = golapis_thread_wait(L);
+    int result = golapis_thread_wait(L, lua_isyieldable(L));
     if (result == -3) {
         return lua_yield(L, 0);
     }
@@ -394,7 +394,7 @@ static int c_semaphore_new_wrapper(lua_State *L) {
 }
 
 static int c_semaphore_wait_wrapper(lua_State *L) {
-    int result = golapis_semaphore_wait(L);
+    int result = golapis_semaphore_wait(L, lua_isyieldable(L));
     if (result == -3) {
         return lua_yield(L, 0);
     }
@@ -1627,7 +1627,7 @@ func golapis_coroutine_create(L *C.lua_State) C.int {
 }
 
 //export golapis_coroutine_resume
-func golapis_coroutine_resume(L *C.lua_State) C.int {
+func golapis_coroutine_resume(L *C.lua_State, yieldable C.int) C.int {
 	co := C.lua_tothread_wrapper(L, 1)
 	if co == nil {
 		C.lua_pushboolean(L, 0)
@@ -1665,7 +1665,7 @@ func golapis_coroutine_resume(L *C.lua_State) C.int {
 		pushGoString(L, "cannot resume non-suspended coroutine")
 		return 2
 	}
-	if !checkYieldable(L) {
+	if !checkYieldable(L, yieldable) {
 		return -1
 	}
 
@@ -1690,14 +1690,14 @@ func golapis_coroutine_resume(L *C.lua_State) C.int {
 }
 
 //export golapis_coroutine_yield
-func golapis_coroutine_yield(L *C.lua_State) C.int {
+func golapis_coroutine_yield(L *C.lua_State, yieldable C.int) C.int {
 	thread := getLuaThreadFromRegistry(L)
 	if thread == nil {
 		pushGoString(L, "attempt to yield from outside a coroutine")
 		return -1
 	}
 
-	if !checkYieldable(L) {
+	if !checkYieldable(L, yieldable) {
 		return -1
 	}
 
@@ -3065,10 +3065,11 @@ func (gls *GolapisLuaState) runBootstrap() error {
 // checkYieldable reports whether the coroutine can yield from here. A yield
 // across a C-call boundary (e.g. inside a string.gsub callback) raises
 // instead, so bindings that set scheduler state before yielding must check
-// first or the state would outlive the failed yield. On failure the error
+// first or the state would outlive the failed yield. The C wrapper passes
+// lua_isyieldable(L) in, which avoids a cgo round trip. On failure the error
 // message is pushed.
-func checkYieldable(L *C.lua_State) bool {
-	if C.lua_isyieldable(L) != 0 {
+func checkYieldable(L *C.lua_State, yieldable C.int) bool {
+	if yieldable != 0 {
 		return true
 	}
 	pushGoString(L, "attempt to yield across C-call boundary")

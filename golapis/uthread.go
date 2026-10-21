@@ -44,7 +44,7 @@ func lightThreadArg(L *C.lua_State, thread *LuaThread, idx C.int, verb string) (
 }
 
 //export golapis_thread_spawn
-func golapis_thread_spawn(L *C.lua_State) C.int {
+func golapis_thread_spawn(L *C.lua_State, yieldable C.int) C.int {
 	if C.lua_gettop(L) < 1 || C.lua_isfunction_wrapper(L, 1) == 0 {
 		pushGoString(L, "thread.spawn expects a function")
 		return -1
@@ -55,7 +55,7 @@ func golapis_thread_spawn(L *C.lua_State) C.int {
 		pushGoString(L, "thread.spawn: no thread context")
 		return -1
 	}
-	if !checkYieldable(L) {
+	if !checkYieldable(L, yieldable) {
 		return -1
 	}
 
@@ -93,13 +93,13 @@ func golapis_thread_spawn(L *C.lua_State) C.int {
 }
 
 //export golapis_thread_wait
-func golapis_thread_wait(L *C.lua_State) C.int {
+func golapis_thread_wait(L *C.lua_State, yieldable C.int) C.int {
 	thread := getLuaThreadFromRegistry(L)
 	if thread == nil || thread.curCo == nil {
 		pushGoString(L, "thread.wait: no thread context")
 		return -1
 	}
-	if !checkYieldable(L) {
+	if !checkYieldable(L, yieldable) {
 		return -1
 	}
 

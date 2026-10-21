@@ -194,7 +194,7 @@ func golapis_semaphore_new(L *C.lua_State) C.int {
 }
 
 //export golapis_semaphore_wait
-func golapis_semaphore_wait(L *C.lua_State) C.int {
+func golapis_semaphore_wait(L *C.lua_State, yieldable C.int) C.int {
 	sem, id := getSemaphoreFromUserdata(L)
 	if sem == nil {
 		pushGoString(L, "not a semaphore instance")
@@ -231,7 +231,7 @@ func golapis_semaphore_wait(L *C.lua_State) C.int {
 		return 2
 	}
 
-	if !checkYieldable(L) {
+	if !checkYieldable(L, yieldable) {
 		return -1
 	}
 	if thread.state.timerSched == nil {
