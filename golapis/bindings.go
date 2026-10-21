@@ -55,6 +55,8 @@ extern int golapis_thread_wait(lua_State *L, int yieldable);
 extern int golapis_thread_kill(lua_State *L);
 extern int golapis_semaphore_new(lua_State *L);
 extern int golapis_semaphore_wait(lua_State *L, int yieldable);
+extern int golapis_re_exec(lua_State *L);
+extern int golapis_re_exec_all(lua_State *L);
 extern int golapis_semaphore_post(lua_State *L);
 extern int golapis_semaphore_count(lua_State *L);
 extern int golapis_semaphore_gc(lua_State *L);
@@ -404,6 +406,22 @@ static int c_semaphore_wait_wrapper(lua_State *L) {
     if (result == -3) {
         return lua_yield(L, 0);
     }
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_re_exec_wrapper(lua_State *L) {
+    int result = golapis_re_exec(L);
+    if (result < 0) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
+static int c_re_exec_all_wrapper(lua_State *L) {
+    int result = golapis_re_exec_all(L);
     if (result < 0) {
         return luaL_error(L, "%s", lua_tostring(L, -1));
     }
@@ -1016,6 +1034,14 @@ static int setup_golapis_global(lua_State *L) {
     lua_pushcfunction(L, c_semaphore_new_wrapper);
     lua_setfield(L, -2, "new");
     lua_setfield(L, -2, "semaphore");   // Add semaphore table to `golapis`
+
+    // Regex primitives; bootstrap.lua builds ngx.re's API on top of them
+    lua_newtable(L);
+    lua_pushcfunction(L, c_re_exec_wrapper);
+    lua_setfield(L, -2, "_exec");
+    lua_pushcfunction(L, c_re_exec_all_wrapper);
+    lua_setfield(L, -2, "_exec_all");
+    lua_setfield(L, -2, "re");          // Add re table to `golapis`
 
     // Create debug table
     lua_newtable(L);
