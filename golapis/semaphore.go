@@ -53,9 +53,7 @@ func (w *semaWaiter) cancelPendingIO() {
 func (w *semaWaiter) claim() {
 	w.done = true
 	if w.timer != nil {
-		if sched := w.thread.state.timerSched; sched != nil {
-			sched.removeResume(w.timer)
-		}
+		w.timer.cancelPendingIO()
 		w.timer = nil
 	}
 }

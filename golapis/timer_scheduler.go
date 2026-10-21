@@ -54,6 +54,7 @@ func (s *timerScheduler) addResume(event *StateEvent, delay time.Duration) *sche
 		deadline: time.Now().Add(delay),
 		event:    event,
 		index:    -1,
+		sched:    s,
 	}
 
 	s.state.timerMu.Lock()
@@ -223,6 +224,13 @@ type scheduledEntry struct {
 	index    int
 	timer    *PendingTimer
 	event    *StateEvent
+	sched    *timerScheduler // set by addResume
+}
+
+// cancelPendingIO lets a resume entry serve as a parked coroutine's pendingIO:
+// thread.kill or request abort drops it from the heap
+func (e *scheduledEntry) cancelPendingIO() {
+	e.sched.removeResume(e)
 }
 
 type scheduledEntryHeap []*scheduledEntry

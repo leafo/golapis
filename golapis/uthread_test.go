@@ -439,3 +439,62 @@ func TestThreadKillCancelsNestedCoroutineRead(t *testing.T) {
 		t.Error("expected the server to have closed the socket")
 	}
 }
+
+func TestThreadKillDropsSleepTimer(t *testing.T) {
+	gls := NewGolapisLuaState()
+	if gls == nil {
+		t.Fatal("Failed to create Lua state")
+	}
+	defer gls.Close()
+	gls.Start()
+	defer gls.Stop()
+
+	err := gls.RunString(`
+		local th = golapis.thread.spawn(function() golapis.sleep(60) end)
+		assert(golapis.thread.kill(th))
+		-- a killed sleeper inside an aborted request takes the same path
+		golapis.thread.spawn(function() golapis.sleep(60) end)
+		error("abort")
+	`)
+	gls.Wait()
+	if err == nil || !strings.Contains(err.Error(), "abort") {
+		t.Fatalf("expected abort error, got %v", err)
+	}
+
+	gls.timerMu.Lock()
+	n := gls.timerSched.heap.Len()
+	gls.timerMu.Unlock()
+	if n != 0 {
+		t.Errorf("%d sleep timer entries left in the heap after kill/abort", n)
+	}
+}
+
+func TestSleepAcrossCBoundaryLeavesNoTimer(t *testing.T) {
+	gls := NewGolapisLuaState()
+	if gls == nil {
+		t.Fatal("Failed to create Lua state")
+	}
+	defer gls.Close()
+	var out bytes.Buffer
+	gls.SetOutputWriter(&out)
+	gls.Start()
+	defer gls.Stop()
+
+	err := gls.RunString(`
+		local ok, err = pcall(string.gsub, "x", "x", function() golapis.sleep(60) end)
+		golapis.say(ok, " ", err)
+	`)
+	gls.Wait()
+	if err != nil {
+		t.Fatalf("Lua error: %v", err)
+	}
+	if !strings.Contains(out.String(), "false") || !strings.Contains(out.String(), "yield across") {
+		t.Errorf("output = %q", out.String())
+	}
+	gls.timerMu.Lock()
+	n := gls.timerSched.heap.Len()
+	gls.timerMu.Unlock()
+	if n != 0 {
+		t.Errorf("%d timer entries left after a failed sleep yield", n)
+	}
+}

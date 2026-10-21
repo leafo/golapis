@@ -4,7 +4,7 @@ package golapis
 #include "lua_helpers.h"
 
 // Forward declaration for Go functions
-extern int golapis_sleep(lua_State *L);
+extern int golapis_sleep(lua_State *L, int yieldable);
 extern int golapis_http_request(lua_State *L);
 extern int golapis_http_request_internal(lua_State *L);
 extern int golapis_print(lua_State *L);
@@ -124,8 +124,14 @@ static void create_arg_table(lua_State *L, const char **argv, int argc, int argf
     lua_setglobal(L, "arg");
 }
 
+// golapis_sleep returns lua_yield's own result (-1) when it parks, so the
+// error marker is -2 here
 static int c_sleep_wrapper(lua_State *L) {
-    return golapis_sleep(L);
+    int result = golapis_sleep(L, lua_isyieldable(L));
+    if (result == -2) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
 }
 
 static int c_http_request_wrapper(lua_State *L) {
@@ -1492,7 +1498,7 @@ func golapis_location_capture(L *C.lua_State) C.int {
 }
 
 //export golapis_sleep
-func golapis_sleep(L *C.lua_State) C.int {
+func golapis_sleep(L *C.lua_State, yieldable C.int) C.int {
 	if C.lua_gettop(L) != 1 {
 		C.lua_pushnil(L)
 		pushGoString(L, "sleep expects exactly one argument (seconds)")
@@ -1531,7 +1537,13 @@ func golapis_sleep(L *C.lua_State) C.int {
 		pushGoString(L, "timer scheduler is not running")
 		return 2
 	}
-	thread.state.timerSched.addResume(&StateEvent{
+	// Checked before the entry exists: a failed yield must not leave one
+	if !checkYieldable(L, yieldable) {
+		return -2
+	}
+	// thread.kill or request abort drops the entry instead of leaving it in
+	// the heap until it fires
+	issuingCo.pendingIO = thread.state.timerSched.addResume(&StateEvent{
 		Type:         EventResumeThread,
 		Thread:       thread,
 		Co:           issuingCo,
