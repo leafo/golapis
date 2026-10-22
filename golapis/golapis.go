@@ -50,6 +50,7 @@ import "C"
 import (
 	"bytes"
 	"container/list"
+	"crypto/x509"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -92,9 +93,11 @@ type GolapisLuaState struct {
 	timerSched    *timerScheduler            // heap-backed timer scheduler
 
 	// TCP connection pool registry (per-state, keyed by host:port or custom name)
-	tcpPoolsMu     sync.Mutex
-	tcpPools       map[string]*tcpPool
-	tcpPoolsClosed bool // set during drain; rejects new inserts
+	tcpPoolsMu sync.Mutex
+	tcpPools   map[string]*tcpPool
+
+	sslTrustedCerts *x509.CertPool // ssl_verify roots; nil means system roots
+	tcpPoolsClosed  bool           // set during drain; rejects new inserts
 
 	httpMux *http.ServeMux // HTTP mux for internal routing (used by location.capture)
 

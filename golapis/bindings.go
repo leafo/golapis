@@ -56,6 +56,7 @@ extern int golapis_thread_kill(lua_State *L);
 extern int golapis_semaphore_new(lua_State *L);
 extern int golapis_semaphore_wait(lua_State *L, int yieldable);
 extern int golapis_re_exec(lua_State *L);
+extern int golapis_tcp_sslhandshake(lua_State *L);
 extern int golapis_re_exec_all(lua_State *L);
 extern int golapis_semaphore_post(lua_State *L);
 extern int golapis_semaphore_count(lua_State *L);
@@ -608,6 +609,16 @@ static int c_tcp_setkeepalive_wrapper(lua_State *L) {
     return golapis_tcp_setkeepalive(L);
 }
 
+// golapis_tcp_sslhandshake returns lua_yield's own result (-1) when it
+// parks, so the error marker is -2 here
+static int c_tcp_sslhandshake_wrapper(lua_State *L) {
+    int result = golapis_tcp_sslhandshake(L);
+    if (result == -2) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+    return result;
+}
+
 static int c_tcp_getreusedtimes_wrapper(lua_State *L) {
     return golapis_tcp_getreusedtimes(L);
 }
@@ -776,6 +787,8 @@ static void init_tcp_socket_metatable(lua_State *L) {
     lua_setfield(L, -2, "close");
     lua_pushcfunction(L, c_tcp_setkeepalive_wrapper);
     lua_setfield(L, -2, "setkeepalive");
+    lua_pushcfunction(L, c_tcp_sslhandshake_wrapper);
+    lua_setfield(L, -2, "sslhandshake");
     lua_pushcfunction(L, c_tcp_getreusedtimes_wrapper);
     lua_setfield(L, -2, "getreusedtimes");
     lua_setfield(L, -2, "__index");  // metatable.__index = methods table

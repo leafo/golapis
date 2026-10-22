@@ -44,6 +44,7 @@ type FileServerMapping struct {
 type HTTPServerConfig struct {
 	ClientMaxBodySize int64               // max request body size in bytes (0 = unlimited)
 	NgxAlias          bool                // alias golapis table to global ngx
+	SSLTrustedCert    string              // PEM bundle for cosocket ssl_verify (lua_ssl_trusted_certificate)
 	FileServers       []FileServerMapping // static file server mappings
 	ReadHeaderTimeout time.Duration       // max time to read request headers (NoTimeout to disable)
 	ReadTimeout       time.Duration       // max time to read the full request (NoTimeout to disable)
@@ -197,6 +198,11 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 
 	if config.NgxAlias {
 		lua.SetupNgxAlias()
+	}
+	if config.SSLTrustedCert != "" {
+		if err := lua.SetSSLTrustedCertificate(config.SSLTrustedCert); err != nil {
+			log.Fatalf("ssl trusted certificate: %v", err)
+		}
 	}
 
 	// Load the entrypoint at startup
