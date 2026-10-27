@@ -160,15 +160,11 @@ type LuaThread struct {
 
 // newThread creates a new LuaThread from the function currently on top of the stack (internal)
 func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
-	// Create coroutine
-	co := C.lua_newthread(gls.luaState)
+	// Recycled or fresh coroutine; either way the main stack is still [function]
+	co, coRef := gls.acquireCoroutine()
 	if co == nil {
 		return nil, fmt.Errorf("failed to create thread")
 	}
-
-	// Stack is now: [function, thread]
-	// Store coroutine in registry to prevent GC (luaL_ref pops it)
-	coRef := C.luaL_ref_wrapper(gls.luaState, C.LUA_REGISTRYINDEX)
 
 	// Copy the function and move it to the coroutine
 	C.lua_pushvalue(gls.luaState, -1)
@@ -728,7 +724,7 @@ func (t *LuaThread) close() {
 		t.coCtxByState = nil
 
 		if t.coRef != 0 {
-			C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, t.coRef)
+			t.state.releaseCoroutine(t.co, t.coRef)
 			t.coRef = 0
 		}
 

@@ -113,6 +113,8 @@ type GolapisLuaState struct {
 
 	hijacked hijackedConns // connections taken over by req.socket(true)
 
+	freeCoroutines []pooledCoroutine // reset entry/timer coroutines, see coroutine_pool.go
+
 	// Semaphores with units to hand out; drained by the event loop after
 	// each event (the equivalent of ngx_lua posting the sema handler)
 	readySemaphores []*Semaphore

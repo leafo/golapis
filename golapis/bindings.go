@@ -2583,18 +2583,13 @@ func golapis_timer_at(L *C.lua_State) C.int {
 		return 2
 	}
 
-	mainL := gls.luaState
-
-	// Create a new coroutine on the main state
-	co := C.lua_newthread(mainL)
+	// Recycled or fresh coroutine, pinned by coRef
+	co, coRef := gls.acquireCoroutine()
 	if co == nil {
 		C.lua_pushnil(L)
 		pushGoString(L, "failed to create timer coroutine")
 		return 2
 	}
-
-	// Store coroutine in registry to prevent GC (it's currently on main stack)
-	coRef := C.luaL_ref_wrapper(mainL, C.LUA_REGISTRYINDEX)
 
 	// Copy callback function to coroutine stack
 	C.lua_pushvalue(L, 2) // Push callback onto current stack
