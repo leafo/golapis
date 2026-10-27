@@ -4,68 +4,94 @@ package golapis
 #include "lua_helpers.h"
 */
 import "C"
-import "runtime/cgo"
+import (
+	"unsafe"
+
+	"golapis/golapis/internal/ljlayout"
+)
 
 // Lookups from a lua_State back to Go objects use LuaJIT's exdata slots
 // (an OpenResty extension) instead of package-level maps, so states on
 // different goroutines never share any registry.
 //
-//   exdata  -> cgo.Handle of the owning GolapisLuaState. Set on the main
-//              state; every coroutine inherits it from lua_newthread.
-//   exdata2 -> cgo.Handle of the LuaThread that drives the coroutine. NULL
-//              on the main state and on coroutines not yet registered.
+//   exdata  -> *GolapisLuaState. Set on the main state; every coroutine
+//              inherits it from lua_newthread.
+//   exdata2 -> *LuaThread driving the coroutine. NULL on the main state
+//              and on coroutines not yet registered.
 //
-// A cgo.Handle is a uintptr, which is what makes stashing it in C memory
-// legal under the cgo pointer rules.
+// Storing a Go pointer in C memory is allowed once the object is pinned,
+// and every callback resolves it with a plain memory read: the field
+// offsets come from the C compiler (see ljlayout), so there is no cgo
+// transition and no handle table on the hot path.
+
+func exdataSlot(L *C.lua_State) *unsafe.Pointer {
+	return (*unsafe.Pointer)(unsafe.Add(unsafe.Pointer(L), ljlayout.Exdata))
+}
+
+func exdata2Slot(L *C.lua_State) *unsafe.Pointer {
+	return (*unsafe.Pointer)(unsafe.Add(unsafe.Pointer(L), ljlayout.Exdata2))
+}
 
 func (gls *GolapisLuaState) registerState() {
-	gls.handle = cgo.NewHandle(gls)
-	gls.threads = make(map[*LuaThread]struct{})
-	C.golapis_set_exdata(gls.luaState, C.uintptr_t(gls.handle))
+	gls.pinner.Pin(gls)
+	*exdataSlot(gls.luaState) = unsafe.Pointer(gls)
 }
 
 func (gls *GolapisLuaState) unregisterState() {
-	C.golapis_set_exdata(gls.luaState, 0)
-	gls.handle.Delete()
+	*exdataSlot(gls.luaState) = nil
+	gls.pinner.Unpin()
 }
 
 func getLuaStateFromRegistry(L *C.lua_State) *GolapisLuaState {
-	h := C.golapis_get_exdata(L)
-	if h == 0 {
-		return nil
-	}
-	return cgo.Handle(h).Value().(*GolapisLuaState)
+	return (*GolapisLuaState)(*exdataSlot(L))
 }
 
 func getLuaThreadFromRegistry(L *C.lua_State) *LuaThread {
-	h := C.golapis_get_exdata2(L)
-	if h == 0 {
-		return nil
-	}
-	return cgo.Handle(h).Value().(*LuaThread)
+	return (*LuaThread)(*exdata2Slot(L))
 }
 
-// trackThread gives a new thread its handle and records it in the owning
-// state so Stop can finalize whatever is still parked. Event loop only.
+// trackThread pins a new thread and records it in the owning state so Stop
+// can finalize whatever is still parked. Event loop only.
 func (gls *GolapisLuaState) trackThread(t *LuaThread) {
-	t.handle = cgo.NewHandle(t)
-	gls.threads[t] = struct{}{}
+	t.pinner.Pin(t)
+	t.nextThread = gls.threadList
+	if gls.threadList != nil {
+		gls.threadList.prevThread = t
+	}
+	gls.threadList = t
 }
 
 // untrackThread is the inverse of trackThread; called once from close.
 func (gls *GolapisLuaState) untrackThread(t *LuaThread) {
-	delete(gls.threads, t)
-	t.handle.Delete()
-	t.handle = 0
+	if t.prevThread != nil {
+		t.prevThread.nextThread = t.nextThread
+	} else {
+		gls.threadList = t.nextThread
+	}
+	if t.nextThread != nil {
+		t.nextThread.prevThread = t.prevThread
+	}
+	t.prevThread, t.nextThread = nil, nil
+	t.pinner.Unpin()
+}
+
+// liveThreads snapshots the live list so callers can close threads while
+// iterating.
+func (gls *GolapisLuaState) liveThreads() []*LuaThread {
+	var out []*LuaThread
+	for t := gls.threadList; t != nil; t = t.nextThread {
+		out = append(out, t)
+	}
+	return out
 }
 
 // bindCoroutine points a coroutine at its driving thread.
 func (t *LuaThread) bindCoroutine(co *C.lua_State) {
-	C.golapis_set_exdata2(co, C.uintptr_t(t.handle))
+	*exdata2Slot(co) = unsafe.Pointer(t)
 }
 
-// unbindCoroutine clears the pointer. Must run before the thread's handle
-// is deleted, otherwise a stale coroutine could resolve a dead handle.
+// unbindCoroutine clears the pointer. Must run before the thread is
+// unpinned, otherwise a stale coroutine could hand out a dangling pointer.
 func unbindCoroutine(co *C.lua_State) {
-	C.golapis_set_exdata2(co, 0)
+	*exdata2Slot(co) = nil
 }

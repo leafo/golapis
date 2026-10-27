@@ -8,21 +8,6 @@
 #include <stdint.h>
 #include <string.h>
 
-// exdata carries integer cgo.Handle values, not real pointers; converting on
-// the C side keeps Go's checkptr and vet out of it.
-static void golapis_set_exdata(lua_State *L, uintptr_t h) {
-    lua_setexdata(L, (void *)h);
-}
-static uintptr_t golapis_get_exdata(lua_State *L) {
-    return (uintptr_t)lua_getexdata(L);
-}
-static void golapis_set_exdata2(lua_State *L, uintptr_t h) {
-    lua_setexdata2(L, (void *)h);
-}
-static uintptr_t golapis_get_exdata2(lua_State *L) {
-    return (uintptr_t)lua_getexdata2(L);
-}
-
 static void lua_newtable_wrapper(lua_State *L) {
     lua_newtable(L);
 }

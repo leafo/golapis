@@ -128,7 +128,7 @@ func checkNoLeaks(t *testing.T, gls *GolapisLuaState, baselineGoroutines int) {
 	t.Helper()
 	gls.Wait()
 
-	threads := len(gls.threads)
+	threads := len(gls.liveThreads())
 	if threads != 0 {
 		t.Errorf("%d LuaThreads still registered", threads)
 	}

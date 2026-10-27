@@ -10,7 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"runtime/cgo"
+	"runtime"
 	"unsafe"
 )
 
@@ -128,7 +128,9 @@ type coCtx struct {
 // LuaThread represents the execution of Lua code in a coroutine
 type LuaThread struct {
 	state        *GolapisLuaState
-	handle       cgo.Handle // exdata2 back-pointer, see registry.go
+	pinner       runtime.Pinner // keeps t addressable from exdata2, see registry.go
+	prevThread   *LuaThread     // links in the owning state's live list
+	nextThread   *LuaThread
 	co           *C.lua_State
 	status       ThreadStatus
 	coRef        C.int               // Lua registry reference to coroutine
