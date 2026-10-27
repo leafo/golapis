@@ -91,6 +91,7 @@ func main() {
 	eFlag := flag.String("e", "", "execute string 'stat'")
 	lFlag := flag.String("l", "", "require library 'name'")
 	ngxFlag := flag.Bool("ngx", false, "alias golapis table to global ngx")
+	workersFlag := flag.Int("workers", 1, "Lua states serving HTTP requests, 0 for one per CPU")
 	sslTrustedFlag := flag.String("ssl-trusted-certificate", "", "PEM bundle of CA certificates for cosocket ssl_verify (default: system roots)")
 	var fileServers fileServerFlags
 	flag.Var(&fileServers, "file-server", "Serve static files: LOCAL_PATH:URL_PREFIX (can be repeated)")
@@ -127,6 +128,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  --http   start HTTP server mode")
 		fmt.Fprintln(os.Stderr, "  --port   port for HTTP server (default 8080)")
 		fmt.Fprintln(os.Stderr, "  --ngx    alias golapis table to global ngx")
+		fmt.Fprintln(os.Stderr, "  --workers N  Lua states serving HTTP requests, 0 for one per CPU (default 1)")
 		fmt.Fprintln(os.Stderr, "  --ssl-trusted-certificate FILE  CA bundle for cosocket ssl_verify")
 		fmt.Fprintln(os.Stderr, "  --file-server PATH[:URL] serve static files (can be repeated)")
 		fmt.Fprintln(os.Stderr, "  --shared-dict NAME:SIZE  declare a shared dictionary (can be repeated)")
@@ -155,6 +157,10 @@ func main() {
 	}
 
 	if *httpFlag {
+		if *workersFlag < 0 {
+			fmt.Fprintln(os.Stderr, "--workers must be a positive number of workers, or 0 for one per CPU")
+			os.Exit(1)
+		}
 		var entry golapis.EntryPoint
 		if *eFlag != "" {
 			entry = golapis.CodeEntryPoint{Code: *eFlag}
@@ -164,7 +170,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "HTTP mode requires a script file or -e code")
 			os.Exit(1)
 		}
-		startHTTPServer(entry, *portFlag, *ngxFlag, *sslTrustedFlag, fileServers, &timeouts)
+		startHTTPServer(entry, *portFlag, *ngxFlag, *sslTrustedFlag, fileServers, &timeouts, *workersFlag)
 	} else {
 		runSingleExecution(filename, scriptArgs, *lFlag, *eFlag, *ngxFlag, *sslTrustedFlag)
 	}
@@ -262,8 +268,9 @@ func runSingleExecution(filename string, scriptArgs []string, requireLib string,
 	lua.Wait()
 }
 
-func startHTTPServer(entry golapis.EntryPoint, port string, ngxAlias bool, sslTrusted string, fileServers []string, timeouts *httpTimeoutFlags) {
+func startHTTPServer(entry golapis.EntryPoint, port string, ngxAlias bool, sslTrusted string, fileServers []string, timeouts *httpTimeoutFlags, workers int) {
 	config := golapis.DefaultHTTPServerConfig()
+	config.Workers = workers
 	config.NgxAlias = ngxAlias
 	config.SSLTrustedCert = sslTrusted
 	timeouts.apply(config)

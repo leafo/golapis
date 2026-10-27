@@ -26,6 +26,7 @@ Options:
   --http   start HTTP server mode
   --port   port for HTTP server (default 8080)
   --ngx    alias golapis table to global ngx
+  --workers N  Lua states serving HTTP requests, 0 for one per CPU (default 1)
   --file-server PATH[:URL] serve static files (can be repeated)
   --shared-dict NAME:SIZE  declare a shared dictionary (can be repeated)
   --http-read-header-timeout TIME  (default 5s)
@@ -105,6 +106,28 @@ modification:
 -- With --ngx flag, both work:
 ngx.say("Hello")      -- nginx-style
 golapis.say("Hello")  -- golapis-style
+```
+
+### Workers (--workers)
+
+In HTTP mode golapis can run several Lua states and spread requests across
+them round-robin, like nginx worker processes but inside a single Go process.
+The default is a single worker; pass a count, or 0 for one per CPU.
+
+```bash
+golapis --http --workers 4 app.lua
+golapis --http --workers 0 app.lua   # one per CPU
+```
+
+Each worker has its own module cache, connection pools and timers. State that
+must be visible to every worker belongs in a shared dict. Scripts can find out
+where they run:
+
+```lua
+golapis.worker.id()     -- 0-based worker index
+golapis.worker.count()  -- number of workers
+golapis.worker.pid()    -- process id
+golapis.worker.exiting() -- true once graceful shutdown has begun
 ```
 
 ### Static File Server (--file-server)

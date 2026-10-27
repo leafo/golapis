@@ -24,6 +24,14 @@ do
   end
 end
 
+-- ngx.worker: exiting() comes from Go; ids are filled in by SetWorkerInfo
+do
+  local worker = golapis.worker
+  function worker.id() return golapis._worker_id end
+  function worker.count() return golapis._worker_count end
+  function worker.pid() return golapis._worker_pid end
+end
+
 -- Libraries written for OpenResty load the semaphore via require
 package.preload["ngx.semaphore"] = function()
   return golapis.semaphore

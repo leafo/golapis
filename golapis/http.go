@@ -53,11 +53,13 @@ type HTTPServerConfig struct {
 	ShutdownTimeout   time.Duration       // max graceful shutdown wait (NoTimeout to disable)
 	MaxHeaderBytes    int                 // max request header size
 	TrustProxyHeaders bool                // trust X-Forwarded-For for request logs
+	Workers           int                 // Lua states serving requests; 1 by default, 0 = one per CPU
 }
 
 // DefaultHTTPServerConfig returns the default HTTP server configuration.
 func DefaultHTTPServerConfig() *HTTPServerConfig {
 	return &HTTPServerConfig{
+		Workers:           1,
 		ClientMaxBodySize: DefaultClientMaxBodySize,
 		ReadHeaderTimeout: DefaultReadHeaderTimeout,
 		ReadTimeout:       DefaultReadTimeout,
@@ -75,6 +77,11 @@ func normalizeHTTPServerConfig(config *HTTPServerConfig) *HTTPServerConfig {
 
 	normalized := *config
 	defaults := DefaultHTTPServerConfig()
+	if normalized.Workers == 0 {
+		normalized.Workers = AutoWorkers()
+	} else if normalized.Workers < 0 {
+		normalized.Workers = defaults.Workers
+	}
 	if normalized.ReadHeaderTimeout == 0 {
 		normalized.ReadHeaderTimeout = defaults.ReadHeaderTimeout
 	}
@@ -153,15 +160,13 @@ func (gls *GolapisLuaState) HTTPHandler(config *HTTPServerConfig) http.Handler {
 		req.maxBodySize = config.ClientMaxBodySize
 		wrappedWriter := req.WrapResponseWriter(w)
 
-		resp := make(chan *StateResponse, 1)
-		gls.eventChan <- &StateEvent{
+		// Rejected with ErrStateStopped if Stop raced with dispatch; the
+		// event is never queued in that case, so a later Start can't run it.
+		result := gls.submit(&StateEvent{
 			Type:         EventRunEntryPoint,
 			OutputWriter: wrappedWriter,
 			Request:      req,
-			Response:     resp,
-		}
-
-		result := <-resp
+		})
 		if req.hijackedConn != nil {
 			if result.Error != nil {
 				log.Printf("error after raw socket acquired %s %s: %v", r.Method, r.URL.RequestURI(), result.Error)
@@ -172,11 +177,15 @@ func (gls *GolapisLuaState) HTTPHandler(config *HTTPServerConfig) http.Handler {
 			return
 		}
 		if result.Error != nil {
-			log.Printf("500 %s %s: %v", r.Method, r.URL.RequestURI(), result.Error)
+			status := http.StatusInternalServerError
+			if errors.Is(result.Error, ErrStateStopped) {
+				status = http.StatusServiceUnavailable
+			}
+			log.Printf("%d %s %s: %v", status, r.Method, r.URL.RequestURI(), result.Error)
 			// Once headers are committed the status can't change; sending
 			// http.Error would just append the message to the response body.
 			if !req.HeadersSent {
-				http.Error(w, result.Error.Error(), http.StatusInternalServerError)
+				http.Error(w, result.Error.Error(), status)
 			}
 			return
 		}
@@ -184,65 +193,26 @@ func (gls *GolapisLuaState) HTTPHandler(config *HTTPServerConfig) http.Handler {
 	})
 }
 
-// StartHTTPServer starts an HTTP server that executes the given Lua script for each request
-// Uses a single shared GolapisLuaState for all requests with cooperative scheduling
+// StartHTTPServer starts an HTTP server that executes the given Lua script
+// for each request, spread round-robin over config.Workers Lua states.
 func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
-	fmt.Printf("Starting HTTP server on port %s with script: %s\n", port, entry)
 	config = normalizeHTTPServerConfig(config)
+	fmt.Printf("Starting HTTP server on port %s with script: %s (%d workers)\n", port, entry, config.Workers)
 
-	// Create single shared Lua state at server startup
-	lua := NewGolapisLuaState()
-	if lua == nil {
-		log.Fatal("Failed to create Lua state")
+	pool, err := NewWorkerPool(entry, config)
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer pool.Close()
 
-	if config.NgxAlias {
-		lua.SetupNgxAlias()
+	for i, r := range buildFileRoutes(config) {
+		fmt.Printf("Serving files from %s at %s\n", config.FileServers[i].LocalPath, r.prefix)
 	}
-	if config.SSLTrustedCert != "" {
-		if err := lua.SetSSLTrustedCertificate(config.SSLTrustedCert); err != nil {
-			log.Fatalf("ssl trusted certificate: %v", err)
-		}
-	}
-
-	// Load the entrypoint at startup
-	if err := lua.LoadEntryPoint(entry); err != nil {
-		lua.Close()
-		log.Fatalf("Failed to load Lua script %s: %v", entry, err)
-	}
-
-	// Start the event loop (runs for lifetime of server)
-	lua.Start()
-	defer lua.Close()
-
-	// Create custom mux so location.capture can route through it
-	mux := http.NewServeMux()
-
-	// Register static file servers first (more specific routes take precedence)
-	for _, fs := range config.FileServers {
-		prefix := fs.URLPrefix
-		if !strings.HasPrefix(prefix, "/") {
-			prefix = "/" + prefix
-		}
-		if !strings.HasSuffix(prefix, "/") {
-			prefix += "/"
-		}
-		localPath := fs.LocalPath // capture for closure
-		fileHandler := http.StripPrefix(prefix, http.FileServer(http.Dir(localPath)))
-		mux.Handle(prefix, fileHandler)
-		fmt.Printf("Serving files from %s at %s\n", localPath, prefix)
-	}
-
-	handler := lua.HTTPHandler(config)
-	mux.Handle("/", handler)
-
-	// Store mux on state so location.capture can route through it
-	lua.httpMux = mux
 
 	var requestWg sync.WaitGroup
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           logHTTPRequests(mux, config.TrustProxyHeaders, &requestWg),
+		Handler:           logHTTPRequests(pool.Handler(), config.TrustProxyHeaders, &requestWg),
 		ReadHeaderTimeout: serverReadHeaderTimeout(config.ReadHeaderTimeout),
 		ReadTimeout:       config.ReadTimeout,
 		WriteTimeout:      config.WriteTimeout,
@@ -259,23 +229,24 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 	select {
 	case <-shutdownStarted:
 		gracefulShutdown = true
+		pool.BeginShutdown()
 		if err := <-shutdownDone; err != nil {
 			log.Printf("HTTP server shutdown error: %v", err)
 		}
 		// Shutdown doesn't track hijacked connections (raw request sockets).
 		// Give their threads the same grace period, then close them so the
 		// request wait can finish.
-		waitWithTimeout(lua.Wait, config.ShutdownTimeout)
-		lua.CloseHijackedConns()
+		waitWithTimeout(pool.Wait, config.ShutdownTimeout)
+		pool.CloseHijackedConns()
 		requestWg.Wait()
 	default:
 	}
 	if gracefulShutdown {
 		// Shutdown has stopped accepting new HTTP work; let in-flight Lua work
-		// finish before stopping the event loop and closing the Lua state.
-		lua.Wait()
+		// finish before stopping the event loops and closing the states.
+		pool.Wait()
 	}
-	lua.Stop()
+	pool.Stop()
 }
 
 // waitWithTimeout runs wait and returns false if it hasn't finished after

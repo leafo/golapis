@@ -88,6 +88,13 @@ type GolapisLuaState struct {
 	running   bool             // is event loop running?
 	threadWg  sync.WaitGroup   // tracks active threads for Wait()
 	stopping  atomic.Bool      // true when event loop is stopping
+	exiting   atomic.Bool      // golapis.worker.exiting(): graceful shutdown has begun
+	// Admission: a request event is enqueued under admitMu.RLock, and Stop
+	// closes admission under the write lock before queueing its stop event.
+	// So every admitted event sits ahead of the stop event and is answered
+	// by the loop; nothing can linger in the queue for a later Start.
+	admitMu     sync.RWMutex
+	admitClosed bool // no event loop is accepting work; guarded by admitMu
 
 	// Timer tracking
 	pendingTimers map[*PendingTimer]struct{} // set of pending timers
@@ -183,11 +190,13 @@ func NewGolapisLuaState() *GolapisLuaState {
 		outputBuffer:  &bytes.Buffer{},
 		outputWriter:  os.Stdout,
 		eventChan:     make(chan *StateEvent, 100), // buffered channel for events
+		admitClosed:   true,                        // nothing runs until Start
 		pendingTimers: make(map[*PendingTimer]struct{}),
 		tcpPools:      make(map[string]*tcpPool),
 	}
 	gls.registerState()
 	gls.SetupGolapis()
+	gls.SetWorkerInfo(0, 1)
 	return gls
 }
 
@@ -246,6 +255,7 @@ func (gls *GolapisLuaState) ForceLuaGC() {
 // Start launches the event loop goroutine
 func (gls *GolapisLuaState) Start() {
 	gls.stopping.Store(false)
+	gls.exiting.Store(false)
 	gls.tcpPoolsMu.Lock()
 	gls.tcpPoolsClosed = false
 	gls.tcpPoolsMu.Unlock()
@@ -254,6 +264,28 @@ func (gls *GolapisLuaState) Start() {
 	gls.timerSched.start()
 	gls.running = true
 	go gls.eventLoop()
+	gls.admitMu.Lock()
+	gls.admitClosed = false
+	gls.admitMu.Unlock()
+}
+
+// ErrStateStopped is returned to a caller whose request arrived while no
+// event loop was accepting work.
+var ErrStateStopped = errors.New("lua state stopped")
+
+// submit queues a request-style event and waits for the loop's answer.
+// Returns ErrStateStopped without queueing if the state is not running.
+func (gls *GolapisLuaState) submit(event *StateEvent) *StateResponse {
+	resp := make(chan *StateResponse, 1)
+	event.Response = resp
+	gls.admitMu.RLock()
+	if gls.admitClosed {
+		gls.admitMu.RUnlock()
+		return &StateResponse{Error: ErrStateStopped}
+	}
+	gls.eventChan <- event
+	gls.admitMu.RUnlock()
+	return <-resp
 }
 
 // Stop shuts down the event loop, cleaning up timers without firing callbacks
@@ -262,7 +294,11 @@ func (gls *GolapisLuaState) Stop() {
 		return
 	}
 	// Hard stop: clean up timers without firing callbacks
+	gls.exiting.Store(true)
 	gls.stopping.Store(true)
+	gls.admitMu.Lock()
+	gls.admitClosed = true
+	gls.admitMu.Unlock()
 	if gls.timerSched != nil {
 		gls.timerSched.stopAndWait()
 		gls.timerSched = nil
@@ -318,48 +354,35 @@ func (gls *GolapisLuaState) Wait() {
 // RunFile sends a request to execute a Lua file.
 // The args are passed to the chunk and become available as ... in the script.
 func (gls *GolapisLuaState) RunFile(filename string, args []string) error {
-	resp := make(chan *StateResponse, 1)
-
 	// Convert args to []interface{} for ResumeValues
 	var initArgs []interface{}
 	for _, arg := range args {
 		initArgs = append(initArgs, arg)
 	}
 
-	gls.eventChan <- &StateEvent{
+	return gls.submit(&StateEvent{
 		Type:         EventRunFile,
 		Filename:     filename,
 		ResumeValues: initArgs,
-		Response:     resp,
-	}
-	result := <-resp
-	return result.Error
+	}).Error
 }
 
 // RunString sends a request to execute a Lua code string
 func (gls *GolapisLuaState) RunString(code string) error {
-	resp := make(chan *StateResponse, 1)
-	gls.eventChan <- &StateEvent{
-		Type:     EventRunString,
-		Code:     code,
-		Response: resp,
-	}
-	result := <-resp
-	return result.Error
+	return gls.submit(&StateEvent{
+		Type: EventRunString,
+		Code: code,
+	}).Error
 }
 
 // RunEntryPoint executes the loaded entry point with optional arguments.
 // Arguments are passed to the Lua chunk and become available as ... in the script.
 // Use LoadEntryPoint to compile the code first.
 func (gls *GolapisLuaState) RunEntryPoint(args ...interface{}) error {
-	resp := make(chan *StateResponse, 1)
-	gls.eventChan <- &StateEvent{
+	return gls.submit(&StateEvent{
 		Type:         EventRunEntryPoint,
 		ResumeValues: args,
-		Response:     resp,
-	}
-	result := <-resp
-	return result.Error
+	}).Error
 }
 
 // RequireModule executes require("name") to load a module
@@ -401,7 +424,7 @@ func (gls *GolapisLuaState) eventLoop() {
 			live := gls.liveThreads()
 			for _, thread := range live {
 				if thread.responseChan != nil {
-					thread.responseChan <- &StateResponse{Error: errors.New("lua state stopped")}
+					thread.responseChan <- &StateResponse{Error: ErrStateStopped}
 				}
 				thread.close()
 			}
@@ -783,6 +806,21 @@ func (gls *GolapisLuaState) storeEntryPoint() {
 // LoadEntryPoint loads an EntryPoint (file or code string) and stores the compiled function in the registry.
 func (gls *GolapisLuaState) LoadEntryPoint(entry EntryPoint) error {
 	return entry.load(gls)
+}
+
+// SetWorkerInfo records this state's worker id (0-based) and the worker
+// count for golapis.worker.id() and golapis.worker.count(). Must be called
+// before Start.
+func (gls *GolapisLuaState) SetWorkerInfo(id, count int) {
+	L := gls.luaState
+	C.lua_rawgeti_wrapper(L, C.LUA_REGISTRYINDEX, gls.golapisRef)
+	for name, v := range map[string]int{"_worker_id": id, "_worker_count": count, "_worker_pid": os.Getpid()} {
+		cname := C.CString(name)
+		C.lua_pushinteger(L, C.lua_Integer(v))
+		C.lua_setfield_wrapper(L, -2, cname)
+		C.free(unsafe.Pointer(cname))
+	}
+	C.lua_pop_wrapper(L, 1)
 }
 
 // SetupNgxAlias sets the global "ngx" to the golapis table for nginx-lua compatibility

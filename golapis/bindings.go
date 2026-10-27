@@ -17,6 +17,7 @@ extern int golapis_req_read_body(lua_State *L);
 extern int golapis_req_get_body_data(lua_State *L);
 extern int golapis_req_get_post_args(lua_State *L);
 extern int golapis_timer_at(lua_State *L);
+extern int golapis_worker_exiting(lua_State *L);
 extern int golapis_timer_pending_count(lua_State *L);
 extern int golapis_timer_running_count(lua_State *L);
 extern int golapis_debug_cancel_timers(lua_State *L);
@@ -215,6 +216,10 @@ static void init_headers_metatable(lua_State *L) {
 
 static int c_timer_at_wrapper(lua_State *L) {
     return golapis_timer_at(L);
+}
+
+static int c_worker_exiting_wrapper(lua_State *L) {
+    return golapis_worker_exiting(L);
 }
 
 static int c_timer_pending_count_wrapper(lua_State *L) {
@@ -1031,6 +1036,12 @@ static int setup_golapis_global(lua_State *L) {
     lua_pushcfunction(L, c_timer_running_count_wrapper);
     lua_setfield(L, -2, "running_count");
     lua_setfield(L, -2, "timer");       // Add timer table to `golapis`
+
+    // Create worker table; id/count/pid are filled in by bootstrap.lua
+    lua_newtable(L);
+    lua_pushcfunction(L, c_worker_exiting_wrapper);
+    lua_setfield(L, -2, "exiting");
+    lua_setfield(L, -2, "worker");
 
     // Create thread table (light threads)
     lua_newtable(L);
@@ -2508,6 +2519,17 @@ func golapis_print(L *C.lua_State) C.int {
 //export golapis_say
 func golapis_say(L *C.lua_State) C.int {
 	return golapisOutput(L, true, "say") // append newline
+}
+
+//export golapis_worker_exiting
+func golapis_worker_exiting(L *C.lua_State) C.int {
+	gls := getLuaStateFromRegistry(L)
+	if gls != nil && gls.exiting.Load() {
+		C.lua_pushboolean(L, 1)
+	} else {
+		C.lua_pushboolean(L, 0)
+	}
+	return 1
 }
 
 //export golapis_timer_at
