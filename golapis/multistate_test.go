@@ -203,17 +203,33 @@ func TestMultiStateCloseWithPendingWork(t *testing.T) {
 		victim := newStartedState(t)
 		var out bytes.Buffer
 		victim.SetOutputWriter(&out)
-		// Leave threads parked on sleep and timers pending, then close.
-		err := victim.RunString(`
-			for i = 1, 4 do
-				golapis.thread.spawn(function() golapis.sleep(10) end)
-				golapis.timer.at(10, function() end)
-			end
-		`)
-		if err != nil {
-			t.Fatalf("victim %d Lua error: %v", i, err)
-		}
+		// Park threads on sleep and leave timers pending, then close the
+		// state out from under them. RunString must come back promptly
+		// with the stop error rather than waiting out the sleeps.
+		runErr := make(chan error, 1)
+		go func() {
+			runErr <- victim.RunString(`
+				for i = 1, 4 do
+					golapis.thread.spawn(function() golapis.sleep(10) end)
+					golapis.timer.at(10, function() end)
+				end
+				golapis.sleep(10)
+			`)
+		}()
+		time.Sleep(10 * time.Millisecond)
+		start := time.Now()
 		victim.Close()
+		select {
+		case err := <-runErr:
+			if err == nil || !strings.Contains(err.Error(), "stopped") {
+				t.Errorf("victim %d RunString error = %v, want stop error", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("victim %d RunString did not return after Close", i)
+		}
+		if took := time.Since(start); took > time.Second {
+			t.Errorf("victim %d Close took %v", i, took)
+		}
 	}
 
 	select {

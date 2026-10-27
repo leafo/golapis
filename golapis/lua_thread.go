@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"runtime/cgo"
 	"unsafe"
 )
 
@@ -127,6 +128,7 @@ type coCtx struct {
 // LuaThread represents the execution of Lua code in a coroutine
 type LuaThread struct {
 	state        *GolapisLuaState
+	handle       cgo.Handle // exdata2 back-pointer, see registry.go
 	co           *C.lua_State
 	status       ThreadStatus
 	coRef        C.int               // Lua registry reference to coroutine
@@ -193,7 +195,8 @@ func (gls *GolapisLuaState) newThread() (*LuaThread, error) {
 	thread.entryCo = entry
 	thread.curCo = entry
 	thread.coCtxByState[co] = entry
-	luaThreadMap[co] = thread
+	gls.trackThread(thread)
+	thread.bindCoroutine(co)
 	gls.threadWg.Add(1)
 	if debugEnabled {
 		debugLog("newThread: created thread co=%p", co)
@@ -246,13 +249,13 @@ func (t *LuaThread) registerCoroutine(co *C.lua_State, coRef C.int) *coCtx {
 		coctx.coRef = coRef
 	}
 	t.coCtxByState[co] = coctx
-	luaThreadMap[co] = t
+	t.bindCoroutine(co)
 	return coctx
 }
 
 func (t *LuaThread) unregisterCoroutine(co *C.lua_State) {
 	delete(t.coCtxByState, co)
-	delete(luaThreadMap, co)
+	unbindCoroutine(co)
 }
 
 func (t *LuaThread) getCoCtx(co *C.lua_State) *coCtx {
@@ -269,11 +272,11 @@ func (t *LuaThread) cleanupCoroutine(coctx *coCtx) {
 	if debugEnabled {
 		debugLog("coroutine.cleanup: co=%p", coctx.co)
 	}
+	t.unregisterCoroutine(coctx.co)
 	if coctx.coRef != 0 {
 		C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, coctx.coRef)
 		coctx.coRef = 0
 	}
-	t.unregisterCoroutine(coctx.co)
 }
 
 // cleanupZombieChildren releases the finished light threads nobody waited
@@ -714,11 +717,11 @@ func (t *LuaThread) close() {
 			// A coroutine still parked (request aborted) must not linger
 			// in a shared semaphore's wait queue or hold a socket read
 			t.cancelPendingIO(coctx)
+			t.unregisterCoroutine(coctx.co)
 			if coctx.coRef != 0 {
 				C.luaL_unref_wrapper(t.state.luaState, C.LUA_REGISTRYINDEX, coctx.coRef)
 				coctx.coRef = 0
 			}
-			t.unregisterCoroutine(coctx.co)
 		}
 		t.coCtxByState = nil
 
@@ -741,6 +744,7 @@ func (t *LuaThread) close() {
 			t.timerRun = false
 		}
 		t.co = nil
+		t.state.untrackThread(t)
 		t.state.threadWg.Done()
 	}
 }

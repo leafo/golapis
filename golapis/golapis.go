@@ -58,6 +58,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime/cgo"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,8 +76,10 @@ func LuaJITVersion() string {
 // GolapisLuaState represents a Lua state with golapis functions initialized
 type GolapisLuaState struct {
 	luaState      *C.lua_State
-	golapisRef    C.int // registry reference to golapis table
-	entrypointRef C.int // registry reference to loaded entrypoint function (0 = not set)
+	handle        cgo.Handle              // exdata back-pointer, see registry.go
+	threads       map[*LuaThread]struct{} // live threads; event loop only
+	golapisRef    C.int                   // registry reference to golapis table
+	entrypointRef C.int                   // registry reference to loaded entrypoint function (0 = not set)
 	outputBuffer  *bytes.Buffer
 	outputWriter  io.Writer
 	// Note: sends from the event loop goroutine can block if this buffer is full;
@@ -395,13 +398,11 @@ func (gls *GolapisLuaState) eventLoop() {
 			// socket read whose connection Stop just closed): their resume
 			// events may still be queued behind this one and will never be
 			// processed, so answer their callers and release them here.
-			live := make(map[*LuaThread]struct{})
-			for _, thread := range luaThreadMap {
-				if thread.state == gls {
-					live[thread] = struct{}{}
-				}
+			live := make([]*LuaThread, 0, len(gls.threads))
+			for thread := range gls.threads {
+				live = append(live, thread)
 			}
-			for thread := range live {
+			for _, thread := range live {
 				if thread.responseChan != nil {
 					thread.responseChan <- &StateResponse{Error: errors.New("lua state stopped")}
 				}
@@ -643,7 +644,8 @@ func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 	thread.entryCo = entry
 	thread.curCo = entry
 	thread.coCtxByState[co] = entry
-	luaThreadMap[co] = thread
+	gls.trackThread(thread)
+	thread.bindCoroutine(co)
 
 	if debugEnabled {
 		debugLog("handleTimerFire: co=%p premature=%v nargs=%d", co, event.Premature, nargs)
