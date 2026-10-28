@@ -3,7 +3,8 @@ package golapis
 // EntryPoint represents a source of Lua code to execute
 type EntryPoint interface {
 	load(gls *GolapisLuaState) error
-	String() string // for logging
+	run(gls *GolapisLuaState) error // execute once on the running state's loop, as the init_worker phase
+	String() string                 // for logging
 }
 
 // FileEntryPoint loads Lua code from a file
@@ -17,6 +18,10 @@ func (f FileEntryPoint) load(gls *GolapisLuaState) error {
 	}
 	gls.storeEntryPoint()
 	return nil
+}
+
+func (f FileEntryPoint) run(gls *GolapisLuaState) error {
+	return gls.submit(&StateEvent{Type: EventRunFile, Filename: f.Filename, Phase: "init_worker"}).Error
 }
 
 func (f FileEntryPoint) String() string {
@@ -34,6 +39,10 @@ func (c CodeEntryPoint) load(gls *GolapisLuaState) error {
 	}
 	gls.storeEntryPoint()
 	return nil
+}
+
+func (c CodeEntryPoint) run(gls *GolapisLuaState) error {
+	return gls.submit(&StateEvent{Type: EventRunString, Code: c.Code, Phase: "init_worker"}).Error
 }
 
 func (c CodeEntryPoint) String() string {

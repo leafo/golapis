@@ -139,6 +139,7 @@ type LuaThread struct {
 	outputWriter io.Writer           // per-request output destination (e.g., http.ResponseWriter)
 	request      *GolapisRequest     // Request context (nil in CLI mode)
 	timerRun     bool                // true for timer callback threads counted as running timers
+	phase        string              // explicit get_phase() value, e.g. "init_worker"; "" = derive
 
 	curCo        *coCtx
 	entryCo      *coCtx

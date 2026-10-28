@@ -1593,13 +1593,19 @@ func golapis_sleep(L *C.lua_State, yieldable C.int) C.int {
 	}
 	// thread.kill or request abort drops the entry instead of leaving it in
 	// the heap until it fires
-	issuingCo.pendingIO = thread.state.timerSched.addResume(&StateEvent{
+	entry := thread.state.timerSched.addResume(&StateEvent{
 		Type:         EventResumeThread,
 		Thread:       thread,
 		Co:           issuingCo,
 		ResumeValues: nil, // sleep returns nothing
 		Response:     nil, // no response needed for internal events
 	}, time.Duration(seconds*float64(time.Second)))
+	if entry == nil {
+		C.lua_pushnil(L)
+		pushGoString(L, "timer scheduler is not running")
+		return 2
+	}
+	issuingCo.pendingIO = entry
 
 	return C.lua_yield_wrapper(L, 0)
 }
@@ -2582,6 +2588,14 @@ func golapis_timer_at(L *C.lua_State) C.int {
 		pushGoString(L, "timer scheduler is not running")
 		return 2
 	}
+	if gls.exiting.Load() && delay > 0 {
+		// ngx_lua's answer once the worker is exiting; recurring timers
+		// that reschedule from their callback stop here. Zero-delay timers
+		// are still allowed for deferred cleanup.
+		C.lua_pushnil(L)
+		pushGoString(L, "process exiting")
+		return 2
+	}
 
 	// Recycled or fresh coroutine, pinned by coRef
 	co, coRef := gls.acquireCoroutine()
@@ -2616,7 +2630,13 @@ func golapis_timer_at(L *C.lua_State) C.int {
 	// Track this timer in the wait group so Wait() blocks until timer completes
 	gls.threadWg.Add(1)
 
-	gls.timerSched.addTimer(timer, time.Duration(delay*float64(time.Second)))
+	if !gls.timerSched.addTimer(timer, time.Duration(delay*float64(time.Second))) {
+		// Stopped underneath us: undo the bookkeeping and refuse
+		gls.discardTimer(timer)
+		C.lua_pushnil(L)
+		pushGoString(L, "timer scheduler is not running")
+		return 2
+	}
 
 	if debugEnabled {
 		debugLog("timer.at: created timer co=%p delay=%v", co, delay)

@@ -1415,8 +1415,14 @@ func golapis_get_phase(L *C.lua_State) C.int {
 		return 1
 	}
 
-	// In a valid thread context - return "content"
 	// Any phase other than "init" enables cosocket usage
-	pushGoString(L, "content")
+	switch {
+	case thread.phase != "":
+		pushGoString(L, thread.phase)
+	case thread.timerRun:
+		pushGoString(L, "timer")
+	default:
+		pushGoString(L, "content")
+	}
 	return 1
 }

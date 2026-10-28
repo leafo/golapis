@@ -27,6 +27,7 @@ Options:
   --port   port for HTTP server (default 8080)
   --ngx    alias golapis table to global ngx
   --workers N  Lua states serving HTTP requests, 0 for one per CPU (default 1)
+  --init-worker FILE  run FILE once per worker before it serves requests
   --file-server PATH[:URL] serve static files (can be repeated)
   --shared-dict NAME:SIZE  declare a shared dictionary (can be repeated)
   --http-read-header-timeout TIME  (default 5s)
@@ -128,6 +129,23 @@ golapis.worker.id()     -- 0-based worker index
 golapis.worker.count()  -- number of workers
 golapis.worker.pid()    -- process id
 golapis.worker.exiting() -- true once graceful shutdown has begun
+```
+
+`--init-worker FILE` is the counterpart of `init_worker_by_lua`: the file runs
+once on each worker after it starts and before it serves requests, with the
+worker API available and `golapis.get_phase()` returning `"init_worker"`. Use
+it to start recurring timers or warm per-worker caches. Timers it starts keep running after the chunk returns; an error in
+the file aborts startup.
+
+On graceful shutdown each worker exits the way an nginx worker does:
+`golapis.worker.exiting()` becomes true, every pending timer fires immediately
+with `premature = true`, and `golapis.timer.at` with a positive delay returns
+`nil, "process exiting"` (zero-delay timers are still accepted for deferred
+cleanup), so a recurring timer that reschedules itself from its callback winds
+down on its own.
+
+```bash
+golapis --http --workers 4 --init-worker init.lua app.lua
 ```
 
 ### Static File Server (--file-server)

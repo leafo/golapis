@@ -239,8 +239,6 @@ func golapis_semaphore_wait(L *C.lua_State, yieldable C.int) C.int {
 
 	issuingCo := thread.curCo
 	w := &semaWaiter{sem: sem, thread: thread, co: issuingCo}
-	sem.waiters = append(sem.waiters, w)
-	issuingCo.pendingIO = w
 
 	w.timer = thread.state.timerSched.addResume(&StateEvent{
 		Type:         EventResumeThread,
@@ -258,6 +256,12 @@ func golapis_semaphore_wait(L *C.lua_State, yieldable C.int) C.int {
 			sem.removeWaiter(w)
 		},
 	}, time.Duration(seconds*float64(time.Second)))
+	if w.timer == nil {
+		pushGoString(L, "timer scheduler is not running")
+		return -1
+	}
+	sem.waiters = append(sem.waiters, w)
+	issuingCo.pendingIO = w
 
 	if debugEnabled {
 		debugLog("semaphore.wait: id=%d co=%p timeout=%v waiters=%d", id, L, seconds, len(sem.waiters))

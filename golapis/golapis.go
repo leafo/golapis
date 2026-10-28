@@ -153,6 +153,10 @@ const (
 type StateEvent struct {
 	Type StateEventType
 
+	// Phase reported by golapis.get_phase() for the thread this event
+	// starts; "" means the default for the event
+	Phase string
+
 	// For RunFile/RunString
 	Filename     string
 	Code         string
@@ -301,9 +305,9 @@ func (gls *GolapisLuaState) Stop() {
 	gls.admitMu.Lock()
 	gls.admitClosed = true
 	gls.admitMu.Unlock()
+	// The scheduler stays assigned: the loop may be reading it right now
 	if gls.timerSched != nil {
 		gls.timerSched.stopAndWait()
-		gls.timerSched = nil
 	}
 	gls.CancelAllTimers()
 	gls.drainTCPPools()
@@ -463,6 +467,7 @@ func (gls *GolapisLuaState) handleRunFile(event *StateEvent) *StateResponse {
 	thread.responseChan = event.Response
 	thread.outputWriter = event.OutputWriter
 	thread.setRequest(event.Request)
+	thread.phase = event.Phase
 
 	if err := thread.resume(event.ResumeValues); err != nil {
 		thread.close()
@@ -499,6 +504,7 @@ func (gls *GolapisLuaState) handleRunEntryPoint(event *StateEvent) *StateRespons
 	thread.responseChan = event.Response
 	thread.outputWriter = event.OutputWriter
 	thread.setRequest(event.Request)
+	thread.phase = event.Phase
 
 	if err := thread.resume(event.ResumeValues); err != nil {
 		thread.close()
@@ -531,6 +537,7 @@ func (gls *GolapisLuaState) handleRunString(event *StateEvent) *StateResponse {
 	thread.responseChan = event.Response
 	thread.outputWriter = event.OutputWriter
 	thread.setRequest(event.Request)
+	thread.phase = event.Phase
 
 	if err := thread.resume(nil); err != nil {
 		thread.close()
@@ -701,7 +708,7 @@ func (gls *GolapisLuaState) handleTimerFire(event *StateEvent) {
 // CancelAllTimers cancels all pending timers, triggering them with premature=true
 // unless the state is stopping.
 func (gls *GolapisLuaState) CancelAllTimers() {
-	if gls.stopping.Load() || gls.timerSched == nil {
+	if gls.stopping.Load() || gls.timerSched == nil || gls.timerSched.stopped.Load() {
 		return
 	}
 	gls.timerSched.cancelPendingTimers()

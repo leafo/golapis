@@ -3,15 +3,22 @@ package golapis
 import (
 	"container/heap"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
+// A scheduler is created by Start and outlives Stop: Stop only flips
+// stopped, so the event loop goroutine can keep reading gls.timerSched
+// while another goroutine stops the state. Work offered to a stopped
+// scheduler is refused and the caller reports "timer scheduler is not
+// running"; any thread parked on it is closed by the stop event.
 type timerScheduler struct {
-	state *GolapisLuaState
-	wake  chan struct{}
-	stop  chan struct{}
-	done  chan struct{}
-	heap  scheduledEntryHeap
+	state   *GolapisLuaState
+	wake    chan struct{}
+	stop    chan struct{}
+	done    chan struct{}
+	stopped atomic.Bool
+	heap    scheduledEntryHeap
 
 	cancelMu     sync.Mutex
 	cancelTimers []*PendingTimer
@@ -31,11 +38,18 @@ func (s *timerScheduler) start() {
 }
 
 func (s *timerScheduler) stopAndWait() {
+	if s.stopped.Swap(true) {
+		return
+	}
 	close(s.stop)
 	<-s.done
 }
 
-func (s *timerScheduler) addTimer(timer *PendingTimer, delay time.Duration) {
+// addTimer queues a timer callback; false if the scheduler is stopped.
+func (s *timerScheduler) addTimer(timer *PendingTimer, delay time.Duration) bool {
+	if s.stopped.Load() {
+		return false
+	}
 	entry := &scheduledEntry{
 		deadline: time.Now().Add(delay),
 		timer:    timer,
@@ -47,9 +61,14 @@ func (s *timerScheduler) addTimer(timer *PendingTimer, delay time.Duration) {
 	heap.Push(&s.heap, entry)
 	s.state.timerMu.Unlock()
 	s.notify()
+	return true
 }
 
+// addResume queues a delayed resume; nil if the scheduler is stopped.
 func (s *timerScheduler) addResume(event *StateEvent, delay time.Duration) *scheduledEntry {
+	if s.stopped.Load() {
+		return nil
+	}
 	entry := &scheduledEntry{
 		deadline: time.Now().Add(delay),
 		event:    event,

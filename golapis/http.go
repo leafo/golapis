@@ -54,6 +54,7 @@ type HTTPServerConfig struct {
 	MaxHeaderBytes    int                 // max request header size
 	TrustProxyHeaders bool                // trust X-Forwarded-For for request logs
 	Workers           int                 // Lua states serving requests; 1 by default, 0 = one per CPU
+	InitWorker        EntryPoint          // run once per worker after start, before it serves (init_worker_by_lua)
 }
 
 // DefaultHTTPServerConfig returns the default HTTP server configuration.
@@ -225,10 +226,8 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
-	gracefulShutdown := false
 	select {
 	case <-shutdownStarted:
-		gracefulShutdown = true
 		pool.BeginShutdown()
 		if err := <-shutdownDone; err != nil {
 			log.Printf("HTTP server shutdown error: %v", err)
@@ -236,15 +235,21 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 		// Shutdown doesn't track hijacked connections (raw request sockets).
 		// Give their threads the same grace period, then close them so the
 		// request wait can finish.
+		deadline := time.Now().Add(config.ShutdownTimeout)
 		waitWithTimeout(pool.Wait, config.ShutdownTimeout)
 		pool.CloseHijackedConns()
 		requestWg.Wait()
+		// Threads whose sockets just closed finish promptly; give them what
+		// is left of the grace period, but never wait without bound: a
+		// timer that ignores worker.exiting() must not pin the process.
+		remaining := config.ShutdownTimeout
+		if remaining >= 0 {
+			remaining = max(time.Until(deadline), time.Second)
+		}
+		if !waitWithTimeout(pool.Wait, remaining) {
+			log.Printf("shutdown timeout: stopping with Lua threads still running")
+		}
 	default:
-	}
-	if gracefulShutdown {
-		// Shutdown has stopped accepting new HTTP work; let in-flight Lua work
-		// finish before stopping the event loops and closing the states.
-		pool.Wait()
 	}
 	pool.Stop()
 }
