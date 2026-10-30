@@ -31,6 +31,20 @@ func (f *sharedDictFlags) Set(value string) error {
 	return nil
 }
 
+// httpAddrFlag holds a listen address, empty when HTTP mode is off. Validating
+// in Set stops `--http app.lua` from silently consuming the script argument.
+type httpAddrFlag string
+
+func (f *httpAddrFlag) String() string { return string(*f) }
+func (f *httpAddrFlag) Set(s string) error {
+	addr, err := golapis.NormalizeListenAddr(s)
+	if err != nil {
+		return err
+	}
+	*f = httpAddrFlag(addr)
+	return nil
+}
+
 // durationFlag holds a ParseHumanDuration value, tracking whether it was given
 // so unset flags keep the server defaults
 type durationFlag struct {
@@ -84,8 +98,8 @@ var (
 )
 
 func main() {
-	httpFlag := flag.Bool("http", false, "Start as HTTP server")
-	portFlag := flag.String("port", "8080", "Port for HTTP server")
+	var httpAddr httpAddrFlag
+	flag.Var(&httpAddr, "http", "Start HTTP server on PORT or HOST:PORT")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
 	vFlag := flag.Bool("v", false, "show version information")
 	eFlag := flag.String("e", "", "execute string 'stat'")
@@ -126,8 +140,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  -v       show version information")
 		fmt.Fprintln(os.Stderr, "  --       stop handling options")
 		fmt.Fprintln(os.Stderr, "  -        execute stdin and stop handling options")
-		fmt.Fprintln(os.Stderr, "  --http   start HTTP server mode")
-		fmt.Fprintln(os.Stderr, "  --port   port for HTTP server (default 8080)")
+		fmt.Fprintln(os.Stderr, "  --http ADDR  start HTTP server on PORT or HOST:PORT")
 		fmt.Fprintln(os.Stderr, "  --ngx    alias golapis table to global ngx")
 		fmt.Fprintln(os.Stderr, "  --workers N  Lua states serving HTTP requests, 0 for one per CPU (default 1)")
 		fmt.Fprintln(os.Stderr, "  --init-worker FILE  run FILE once per worker before it serves requests")
@@ -158,12 +171,12 @@ func main() {
 		}
 	}
 
-	if *initWorkerFlag != "" && !*httpFlag {
+	if *initWorkerFlag != "" && httpAddr == "" {
 		fmt.Fprintln(os.Stderr, "--init-worker only applies in HTTP server mode (--http)")
 		os.Exit(1)
 	}
 
-	if *httpFlag {
+	if httpAddr != "" {
 		if *workersFlag < 0 {
 			fmt.Fprintln(os.Stderr, "--workers must be a positive number of workers, or 0 for one per CPU")
 			os.Exit(1)
@@ -177,7 +190,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "HTTP mode requires a script file or -e code")
 			os.Exit(1)
 		}
-		startHTTPServer(entry, *portFlag, *ngxFlag, *sslTrustedFlag, fileServers, &timeouts, *workersFlag, *initWorkerFlag)
+		startHTTPServer(entry, string(httpAddr), *ngxFlag, *sslTrustedFlag, fileServers, &timeouts, *workersFlag, *initWorkerFlag)
 	} else {
 		runSingleExecution(filename, scriptArgs, *lFlag, *eFlag, *ngxFlag, *sslTrustedFlag)
 	}
@@ -275,7 +288,7 @@ func runSingleExecution(filename string, scriptArgs []string, requireLib string,
 	lua.Wait()
 }
 
-func startHTTPServer(entry golapis.EntryPoint, port string, ngxAlias bool, sslTrusted string, fileServers []string, timeouts *httpTimeoutFlags, workers int, initWorker string) {
+func startHTTPServer(entry golapis.EntryPoint, addr string, ngxAlias bool, sslTrusted string, fileServers []string, timeouts *httpTimeoutFlags, workers int, initWorker string) {
 	config := golapis.DefaultHTTPServerConfig()
 	config.Workers = workers
 	if initWorker != "" {
@@ -306,5 +319,5 @@ func startHTTPServer(entry golapis.EntryPoint, port string, ngxAlias bool, sslTr
 		})
 	}
 
-	golapis.StartHTTPServer(entry, port, config)
+	golapis.StartHTTPServer(entry, addr, config)
 }

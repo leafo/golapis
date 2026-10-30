@@ -213,3 +213,24 @@ func TestServerReadHeaderTimeoutDisable(t *testing.T) {
 		t.Fatalf("serverReadHeaderTimeout(5s) = %v", got)
 	}
 }
+
+func TestListenURL(t *testing.T) {
+	tests := []struct {
+		addr string
+		want string
+	}{
+		{"127.0.0.1:8080", "http://127.0.0.1:8080"},
+		{"[::1]:8080", "http://[::1]:8080"},
+		{"0.0.0.0:8080", "http://localhost:8080 (all interfaces)"},
+		{"[::]:8080", "http://localhost:8080 (all interfaces)"},
+	}
+	for _, tt := range tests {
+		addr, err := net.ResolveTCPAddr("tcp", tt.addr)
+		if err != nil {
+			t.Fatalf("ResolveTCPAddr(%q): %v", tt.addr, err)
+		}
+		if got := listenURL(addr); got != tt.want {
+			t.Errorf("listenURL(%q) = %q, want %q", tt.addr, got, tt.want)
+		}
+	}
+}

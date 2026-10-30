@@ -1,5 +1,5 @@
 -- Test golapis.status for setting HTTP response status codes
--- Run with: go run main.go -http 8080 examples/set_status.lua
+-- Run with: go run main.go -http 127.0.0.1:8080 examples/set_status.lua
 -- Then: curl -i http://localhost:8080
 
 -- Read the default status (0 before any body is sent)

@@ -1,5 +1,5 @@
 -- Test golapis.header proxy object for setting response headers
--- Run with: go run main.go -http 8080 examples/header.lua
+-- Run with: go run main.go -http 127.0.0.1:8080 examples/header.lua
 -- Then: curl -i http://localhost:8080
 
 -- Set a custom header

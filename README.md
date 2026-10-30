@@ -23,8 +23,7 @@ Options:
   -v       show version information
   --       stop handling options
   -        execute stdin and stop handling options
-  --http   start HTTP server mode
-  --port   port for HTTP server (default 8080)
+  --http ADDR  start HTTP server on PORT or HOST:PORT
   --ngx    alias golapis table to global ngx
   --workers N  Lua states serving HTTP requests, 0 for one per CPU (default 1)
   --init-worker FILE  run FILE once per worker before it serves requests
@@ -59,15 +58,16 @@ golapis script.lua arg1 arg2
 Start an HTTP server that executes a Lua script for each request:
 
 ```bash
-# Start server on default port 8080
-golapis --http app.lua
-
-# Specify a different port
-golapis --http --port 3000 app.lua
+# Listen on localhost only
+golapis --http 127.0.0.1:8080 app.lua
 
 # Use inline code
-golapis --http -e 'golapis.say("Hello, " .. golapis.var.remote_addr)'
+golapis --http 127.0.0.1:8080 -e 'golapis.say("Hello, " .. golapis.var.remote_addr)'
 ```
+
+`--http` requires an address, either `PORT` or `HOST:PORT`. IPv6 hosts go in
+brackets, as in `[::1]:8080`. Passing only a port, as in `8080` or `:8080`,
+listens on all interfaces and exposes the server to the network.
 
 In HTTP mode, the script has access to request-specific APIs like `golapis.var`,
 `golapis.req`, `golapis.header`, and `golapis.status`.
@@ -88,7 +88,7 @@ The `--http-*-timeout` flags take an integer with an optional `ms`, `s`, `m`,
   waits for in-flight requests
 
 ```bash
-golapis --http --http-write-timeout 0 --http-idle-timeout 5m app.lua
+golapis --http 127.0.0.1:8080 --http-write-timeout 0 --http-idle-timeout 5m app.lua
 ```
 
 ### nginx Compatibility (--ngx)
@@ -97,7 +97,7 @@ For compatibility with existing lua-nginx-module code, the `--ngx` flag aliases
 the `golapis` table to the global `ngx`:
 
 ```bash
-golapis --http --ngx app.lua
+golapis --http 127.0.0.1:8080 --ngx app.lua
 ```
 
 This allows existing code using `ngx.say()`, `ngx.var`, etc. to work without
@@ -116,8 +116,8 @@ them round-robin, like nginx worker processes but inside a single Go process.
 The default is a single worker; pass a count, or 0 for one per CPU.
 
 ```bash
-golapis --http --workers 4 app.lua
-golapis --http --workers 0 app.lua   # one per CPU
+golapis --http 127.0.0.1:8080 --workers 4 app.lua
+golapis --http 127.0.0.1:8080 --workers 0 app.lua   # one per CPU
 ```
 
 Each worker has its own module cache, connection pools and timers. State that
@@ -145,7 +145,7 @@ cleanup), so a recurring timer that reschedules itself from its callback winds
 down on its own.
 
 ```bash
-golapis --http --workers 4 --init-worker init.lua app.lua
+golapis --http 127.0.0.1:8080 --workers 4 --init-worker init.lua app.lua
 ```
 
 ### Static File Server (--file-server)
@@ -154,13 +154,13 @@ Serve static files alongside your Lua application:
 
 ```bash
 # Serve ./static directory at /static/ URL prefix
-golapis --http --file-server static app.lua
+golapis --http 127.0.0.1:8080 --file-server static app.lua
 
 # Explicit mapping: local path to URL prefix
-golapis --http --file-server ./assets:/static/ app.lua
+golapis --http 127.0.0.1:8080 --file-server ./assets:/static/ app.lua
 
 # Multiple directories
-golapis --http --file-server static --file-server uploads app.lua
+golapis --http 127.0.0.1:8080 --file-server static --file-server uploads app.lua
 ```
 
 The shorthand `--file-server static` is equivalent to `--file-server static:static`,
@@ -428,7 +428,7 @@ minimum 8192 bytes, matching OpenResty) and are shared across all requests for
 the lifetime of the process. Accessing an undeclared dictionary returns `nil`.
 
 ```bash
-golapis --http --ngx --shared-dict cache:10m app.lua
+golapis --http 127.0.0.1:8080 --ngx --shared-dict cache:10m app.lua
 ```
 
 ```lua
@@ -568,5 +568,5 @@ golapis script.moon
 Or start an HTTP server with a MoonScript entry point:
 
 ```bash
-golapis --http --port=8080 app.moon
+golapis --http 127.0.0.1:8080 app.moon
 ```

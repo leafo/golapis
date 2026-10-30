@@ -194,11 +194,46 @@ func (gls *GolapisLuaState) HTTPHandler(config *HTTPServerConfig) http.Handler {
 	})
 }
 
-// StartHTTPServer starts an HTTP server that executes the given Lua script
-// for each request, spread round-robin over config.Workers Lua states.
-func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
+// NormalizeListenAddr converts PORT or HOST:PORT into an address for net.Listen.
+func NormalizeListenAddr(addr string) (string, error) {
+	if !strings.Contains(addr, ":") {
+		addr = ":" + addr
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err == nil {
+		_, err = strconv.ParseUint(port, 10, 16)
+	}
+	if err != nil {
+		return "", errors.New("expected PORT or HOST:PORT")
+	}
+	return addr, nil
+}
+
+func listenURL(addr *net.TCPAddr) string {
+	if addr.IP.IsUnspecified() {
+		return fmt.Sprintf("http://localhost:%d (all interfaces)", addr.Port)
+	}
+	return "http://" + addr.String()
+}
+
+// StartHTTPServer starts an HTTP server on addr, given as PORT or HOST:PORT,
+// that executes the given Lua script for each request, spread round-robin over
+// config.Workers Lua states.
+func StartHTTPServer(entry EntryPoint, addr string, config *HTTPServerConfig) {
 	config = normalizeHTTPServerConfig(config)
-	fmt.Printf("Starting HTTP server on port %s with script: %s (%d workers)\n", port, entry, config.Workers)
+
+	listenAddr, err := NormalizeListenAddr(addr)
+	if err != nil {
+		log.Fatalf("invalid listen address %q: %v", addr, err)
+	}
+	// Bind before starting workers so a bad address can't run --init-worker
+	// side effects for a server that never comes up.
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tcpAddr := listener.Addr().(*net.TCPAddr)
+	fmt.Printf("Starting HTTP server on %s with script: %s (%d workers)\n", tcpAddr, entry, config.Workers)
 
 	pool, err := NewWorkerPool(entry, config)
 	if err != nil {
@@ -212,7 +247,6 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 
 	var requestWg sync.WaitGroup
 	server := &http.Server{
-		Addr:              ":" + port,
 		Handler:           logHTTPRequests(pool.Handler(), config.TrustProxyHeaders, &requestWg),
 		ReadHeaderTimeout: serverReadHeaderTimeout(config.ReadHeaderTimeout),
 		ReadTimeout:       config.ReadTimeout,
@@ -222,8 +256,8 @@ func StartHTTPServer(entry EntryPoint, port string, config *HTTPServerConfig) {
 	}
 	shutdownStarted, shutdownDone := setupGracefulShutdown(server, config.ShutdownTimeout)
 
-	fmt.Printf("Listening on http://localhost:%s\n", port)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	fmt.Printf("Listening on %s\n", listenURL(tcpAddr))
+	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 	select {
